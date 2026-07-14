@@ -114,10 +114,11 @@ On Dewey (tunnel already configured for `dewey-bridge.momentumclaw.app`):
 
 ```bash
 cd ~/Desktop/repos/hermes-voice-ios
-# optional live Realtime — otherwise bridge uses BRIDGE_MOCK_OPENAI=1
-# printf '%s\n' 'sk-...' > /root/.hermes/voice_bridge_openai_api_key && chmod 600 $_
+# start-bridge refreshes bridge/.env from:
+#   - Hermes API key: /root/.hermes/voice_bridge_api_server_key
+#   - OpenAI key: 1Password field OPEN_AI_KEY on "Hermes Agent Secrets" (Dewey vault)
 bash scripts/dewey/start-bridge.sh
-bash scripts/dewey/smoke-bridge.sh
+bash scripts/dewey/smoke-bridge.sh   # expect REALTIME_LIVE_OK when OPEN_AI_KEY is set
 ```
 
 ### Everything at once

@@ -14,8 +14,11 @@ PORT="${PORT:-8787}"
 
 export PATH="${HOME}/.hermes/node/bin:/usr/local/bin:${PATH}"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "missing $ENV_FILE — copy from .env.example and fill secrets" >&2
+# Refresh secrets from 1Password / on-host key files when available.
+if [[ -x "$(dirname "$0")/refresh-env.sh" ]]; then
+  bash "$(dirname "$0")/refresh-env.sh"
+elif [[ ! -f "$ENV_FILE" ]]; then
+  echo "missing $ENV_FILE — run scripts/dewey/refresh-env.sh or copy .env.example" >&2
   exit 1
 fi
 

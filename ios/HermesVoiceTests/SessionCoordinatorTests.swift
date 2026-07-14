@@ -120,7 +120,7 @@ private func makeCoordinator(factory: FakeTransportFactory) -> SessionCoordinato
     SessionCoordinator(
         backend: NeverCalledBackend(),
         sessionToken: { "st_test" },
-        instructions: "test instructions",
+        instructions: { "test instructions" },
         toolDefinitions: [],
         callLifetimeSeconds: 3600, // long enough that the timer never fires during a test
         makeTransport: { factory.makeTransport() }

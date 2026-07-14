@@ -72,9 +72,10 @@ final class SessionCoordinator: @unchecked Sendable {
     private let backend: BackendClientProtocol
     private let sessionToken: @Sendable () async throws -> String
     private let makeTransport: @MainActor () -> RealtimeTransport
-    private let instructions: String
+    private let instructions: () -> String
     private let toolDefinitions: [RealtimeToolDefinition]
     private let callLifetimeSeconds: TimeInterval
+    private var lastVoice: String?
 
     private let mutex = AsyncMutex()
     private var generationCounter = 0
@@ -93,7 +94,7 @@ final class SessionCoordinator: @unchecked Sendable {
     init(
         backend: BackendClientProtocol,
         sessionToken: @escaping @Sendable () async throws -> String,
-        instructions: String,
+        instructions: @escaping @MainActor () -> String,
         toolDefinitions: [RealtimeToolDefinition],
         callLifetimeSeconds: TimeInterval = SessionCoordinator.defaultCallLifetimeSeconds,
         makeTransport: @escaping @MainActor () -> RealtimeTransport
@@ -112,7 +113,8 @@ final class SessionCoordinator: @unchecked Sendable {
     /// `HermesVoiceStore` layer (see its `start()`), which already knows
     /// whether it has ever called this.
     func start(voice: String?) async -> Result<Void, ConnectError> {
-        await mutex.withLock { await self.connectNewPrimary(voice: voice) }
+        lastVoice = voice
+        return await mutex.withLock { await self.connectNewPrimary(voice: voice) }
     }
 
     func send(_ event: RealtimeClientEvent) {
@@ -120,11 +122,12 @@ final class SessionCoordinator: @unchecked Sendable {
     }
 
     func scheduleReconnect(after delay: TimeInterval, voice: String?, onReconnected: @escaping (Result<Void, ConnectError>) -> Void) {
+        lastVoice = voice ?? lastVoice
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
             guard let self, !Task.isCancelled else { return }
-            let result = await self.mutex.withLock { await self.connectNewPrimary(voice: voice) }
+            let result = await self.mutex.withLock { await self.connectNewPrimary(voice: voice ?? self.lastVoice) }
             onReconnected(result)
         }
     }
@@ -173,10 +176,12 @@ final class SessionCoordinator: @unchecked Sendable {
     /// other seam to trigger a rotation deterministically in a test without
     /// waiting out a real `callLifetimeSeconds` timer).
     func rotate(voice: String?) async {
+        let voiceToUse = voice ?? lastVoice
+        lastVoice = voiceToUse
         await mutex.withLock { [self] in
             guard primaryTransport != nil else { return }
             do {
-                let credential = try await mintCredential(voice: voice)
+                let credential = try await mintCredential(voice: voiceToUse)
                 let candidateGeneration = nextGeneration()
                 let candidate = try await establishAndHandshake(credential: credential, generation: candidateGeneration) { transport in
                     self.rotatingTransport = transport
@@ -200,7 +205,7 @@ final class SessionCoordinator: @unchecked Sendable {
                 }
                 rotatingTransport = nil
                 rotatingGeneration = nil
-                scheduleRotationRetry(voice: voice)
+                scheduleRotationRetry(voice: voiceToUse)
             }
         }
     }
@@ -209,7 +214,7 @@ final class SessionCoordinator: @unchecked Sendable {
         rotationTimer?.invalidate()
         rotationTimer = Timer.scheduledTimer(withTimeInterval: callLifetimeSeconds, repeats: false) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in await self.rotate(voice: nil) }
+            Task { @MainActor in await self.rotate(voice: self.lastVoice) }
         }
     }
 
@@ -217,7 +222,7 @@ final class SessionCoordinator: @unchecked Sendable {
         rotationTimer?.invalidate()
         rotationTimer = Timer.scheduledTimer(withTimeInterval: Self.rotationRetryDelaySeconds, repeats: false) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in await self.rotate(voice: voice) }
+            Task { @MainActor in await self.rotate(voice: voice ?? self.lastVoice) }
         }
     }
 
@@ -270,7 +275,7 @@ final class SessionCoordinator: @unchecked Sendable {
             transport.onServerEvent = { event in
                 switch event {
                 case .sessionCreated:
-                    try? transport.send(.sessionUpdate(instructions: self.instructions, tools: self.toolDefinitions, voice: nil))
+                    try? transport.send(.sessionUpdate(instructions: self.instructions(), tools: self.toolDefinitions, voice: nil))
                 case .sessionUpdated:
                     finish(.success(()))
                 case let .errorEvent(message):

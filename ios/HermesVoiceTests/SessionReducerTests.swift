@@ -179,8 +179,45 @@ final class SessionReducerTests: XCTestCase {
             summary: nil, progress: nil, result: nil, error: nil, pendingApproval: nil,
             createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", history: []
         )
-        _ = SessionReducer.reduce(&state, .taskUpdated(task))
+        let effects = SessionReducer.reduce(&state, .taskUpdated(task))
         XCTAssertEqual(state.tasks["task_1"], task)
+        XCTAssertEqual(effects, [], "no narration before the Realtime call is established")
+    }
+
+    func testTaskUpdatedNarratesCompletionOnceCallIsLive() {
+        var state = makeState()
+        state.isCallEstablished = true
+        state.phase = .listening
+        let task = HermesTask(
+            id: "task_1", hermesSessionId: "hs_test", status: .completed, instruction: "book a table",
+            summary: "Table for 2 at 7pm", progress: nil, result: nil, error: nil, pendingApproval: nil,
+            createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:01Z", history: []
+        )
+        let effects = SessionReducer.reduce(&state, .taskUpdated(task))
+        XCTAssertEqual(effects.count, 2)
+        guard case let .sendClientEvent(first) = effects[0],
+              case let .conversationMessage(role, text) = first else {
+            return XCTFail("expected conversationMessage effect")
+        }
+        XCTAssertEqual(role, "user")
+        XCTAssertTrue(text.contains("Table for 2 at 7pm"))
+        XCTAssertEqual(effects[1], .sendClientEvent(.responseCreate))
+
+        let again = SessionReducer.reduce(&state, .taskUpdated(task))
+        XCTAssertEqual(again, [], "identical fingerprint must not re-narrate")
+    }
+
+    func testInstructionsWithTaskRecapListsActiveTasks() {
+        let task = HermesTask(
+            id: "task_1", hermesSessionId: "hs_test", status: .running, instruction: "book a table",
+            summary: nil, progress: HermesTaskProgress(percent: 50, message: "calling restaurant"),
+            result: nil, error: nil, pendingApproval: nil,
+            createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:01Z", history: []
+        )
+        let text = SessionState.instructionsWithTaskRecap(base: "base", tasks: [task])
+        XCTAssertTrue(text.contains("1 Hermes task is in flight"))
+        XCTAssertTrue(text.contains("book a table"))
+        XCTAssertTrue(text.contains("calling restaurant"))
     }
 
     func testErrorEventTransitionsToFailed() {

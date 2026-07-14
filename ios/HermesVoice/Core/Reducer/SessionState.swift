@@ -34,6 +34,10 @@ struct SessionState: Equatable {
     var isCallEstablished: Bool = false
     var pendingToolCalls: [PendingToolCall] = []
     var tasks: [String: HermesTask] = [:]
+    /// Fingerprint of the last Hermes update we already asked Realtime to
+    /// narrate, keyed by task id — prevents duplicate speech on SSE replay
+    /// or identical progress ticks.
+    var lastNarratedFingerprints: [String: String] = [:]
     var lastAssistantTranscript: String = ""
     var lastError: String?
     var reconnectAttempt: Int = 0
@@ -67,6 +71,11 @@ struct SessionState: Equatable {
         tasks.values.sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// In-flight / approval tasks for rotation recap (PROTOCOL.md §6).
+    var activeTasksForRecap: [HermesTask] {
+        sortedTasks.filter { !$0.status.isTerminal }
+    }
+
     /// Returns `true` (and records the id) the first time this `callId` is
     /// seen; `false` on any repeat.
     mutating func markCallIdSeenIfNew(_ callId: String) -> Bool {
@@ -76,6 +85,55 @@ struct SessionState: Equatable {
             seenCallIds.removeFirst(seenCallIds.count - Self.maxTrackedCallIds)
         }
         return true
+    }
+
+    /// Appends a short task-rail recap for session.update on (re)connect /
+    /// rotation, per PROTOCOL.md §6.
+    static func instructionsWithTaskRecap(base: String, tasks: [HermesTask]) -> String {
+        let active = tasks.filter { !$0.status.isTerminal }
+        guard !active.isEmpty else { return base }
+        let lines = active.map { task -> String in
+            let progress = task.progress?.message ?? task.summary ?? task.status.rawValue
+            return "- \(task.id): \(task.instruction) [\(task.status.rawValue)] \(progress)"
+        }
+        return base
+            + "\n\n\(active.count) Hermes task\(active.count == 1 ? " is" : "s are") in flight. "
+            + "Continue the conversation with that context; do not re-ask for details you already have:\n"
+            + lines.joined(separator: "\n")
+    }
+
+    /// Short prompt injected so Realtime narrates a Hermes update out loud.
+    static func narrationPrompt(for task: HermesTask) -> String? {
+        switch task.status {
+        case .waitingApproval:
+            let action = task.pendingApproval?.action ?? "an action"
+            return "Hermes needs your approval for \(action) on task \"\(task.instruction)\". Read it back briefly and ask for an explicit yes or no."
+        case .completed:
+            let summary = task.summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = (summary?.isEmpty == false) ? summary! : "Done."
+            return "Hermes finished: \(body). Narrate this to the user in one short sentence."
+        case .failed:
+            let message = task.error?.message ?? "something went wrong"
+            return "Hermes failed: \(message). Tell the user briefly."
+        case .canceled:
+            return "Hermes canceled the task \"\(task.instruction)\". Acknowledge briefly."
+        case .running, .queued:
+            if let message = task.progress?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                return "Hermes update on \"\(task.instruction)\": \(message). Narrate this briefly if useful; otherwise stay quiet."
+            }
+            if let summary = task.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                return "Hermes update on \"\(task.instruction)\": \(summary). Narrate this briefly if useful; otherwise stay quiet."
+            }
+            return nil
+        }
+    }
+
+    static func narrationFingerprint(for task: HermesTask) -> String {
+        let progress = task.progress?.message ?? ""
+        let summary = task.summary ?? ""
+        let approval = task.pendingApproval?.approvalId ?? ""
+        let error = task.error?.message ?? ""
+        return "\(task.status.rawValue)|\(progress)|\(summary)|\(approval)|\(error)|\(task.updatedAt)"
     }
 
     static let defaultInstructions = """

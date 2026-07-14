@@ -28,7 +28,18 @@ enum SessionReducer {
 
         case let .taskUpdated(task):
             state.tasks[task.id] = task
-            return []
+            // Only narrate once the Realtime call is live, and only when the
+            // task's narratable fingerprint changed (hydration + SSE replays
+            // must not spam response.create).
+            guard state.isCallEstablished else { return [] }
+            let fingerprint = SessionState.narrationFingerprint(for: task)
+            guard state.lastNarratedFingerprints[task.id] != fingerprint else { return [] }
+            guard let prompt = SessionState.narrationPrompt(for: task) else { return [] }
+            state.lastNarratedFingerprints[task.id] = fingerprint
+            return [
+                .sendClientEvent(.conversationMessage(role: "user", text: prompt)),
+                .sendClientEvent(.responseCreate),
+            ]
 
         case let .hermesSessionAssigned(id):
             state.hermesSessionId = id

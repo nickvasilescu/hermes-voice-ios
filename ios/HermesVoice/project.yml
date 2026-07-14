@@ -57,11 +57,10 @@ targets:
         # via KeychainSessionStore, never in Info.plist/xcconfig — see
         # docs/SECURITY.md.
         BridgeBaseURL: $(BRIDGE_BASE_URL)
-    # WebRTC is intentionally not declared as a package dependency here —
-    # see Core/Transport/WebRTCRealtimeTransport.swift. Adding one (e.g.
-    # https://github.com/stasel/WebRTC) is a real, human decision; do it by
-    # adding a `packages:` entry + a `dependencies:` entry on this target,
-    # then implement `WebRTCEngine` against it.
+    dependencies:
+      - package: WebRTC
+    # Stasel WebRTC binary (~30–50MB). Chosen as the concrete engine for the
+    # talking demo; see Core/Transport/StaselWebRTCEngine.swift.
 
   HermesVoiceTests:
     type: bundle.unit-test
@@ -73,6 +72,11 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    from: "125.0.0"
 
 schemes:
   HermesVoice:

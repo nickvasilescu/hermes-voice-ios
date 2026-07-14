@@ -9,16 +9,14 @@ import Foundation
 /// https://github.com/stasel/WebRTC) can be swapped in without touching
 /// anything above this file.
 ///
-/// [SCAFFOLDED]: no concrete implementation of this protocol ships in this
-/// repo. Adding one is a real decision (which WebRTC binary, its license,
-/// ~30-50MB added to app size) that CLAUDE.md explicitly asks a human to
-/// make rather than have an agent silently vendor a dependency. See
-/// docs/ARCHITECTURE.md "Known limitations".
+/// [IMPLEMENTED] via `StaselWebRTCEngine` (Stasel WebRTC SPM package).
+/// Tests and previews may still inject `nil` / a fake transport; production
+/// wiring uses `makeWebRTCEngine()`.
 ///
 /// `@MainActor`: a real implementation's callbacks (`onDataChannelMessage`,
 /// `onDataChannelOpen`, `onConnectionStateChange`) will fire from
 /// libwebrtc's own internal threads — the implementation is responsible
-/// for hopping back to the main actor (e.g. `Task { @MainActor in ... } }`)
+/// for hopping back to the main actor (e.g. `Task { @MainActor in ... }`)
 /// before invoking them, so that everything above this protocol boundary
 /// can stay simply, provably main-actor-confined instead of reaching for
 /// `@unchecked Sendable` to paper over cross-thread callback delivery.

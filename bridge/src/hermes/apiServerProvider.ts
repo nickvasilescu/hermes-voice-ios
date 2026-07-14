@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { TTLMap } from "../util/ttlMap.js";
 import {
   HermesProviderError,
   type CreateTaskInput,
@@ -18,6 +20,16 @@ export interface ApiServerHermesProviderOptions {
    * every run started by this provider.
    */
   instructions?: string;
+  /** Hard cap on internally-tracked tasks; oldest-touched evicted first. */
+  maxEntries?: number;
+  /** How long an internal task record lives since it was last touched. */
+  ttlMs?: number;
+  /**
+   * How long a terminal task record is kept before proactive deletion —
+   * shorter than `ttlMs` on purpose (same rationale as MockHermesProvider).
+   */
+  terminalRetentionMs?: number;
+  clock?: () => number;
 }
 
 interface ConversationMessage {
@@ -39,7 +51,13 @@ interface InternalTask {
   lastOutput?: string;
   sseAbort?: AbortController;
   startingRun: boolean;
+  /** Set by cancelTask so a run that returns mid-startup is stopped. */
+  cancelRequested: boolean;
 }
+
+const DEFAULT_MAX_ENTRIES = 5000;
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 
 /**
  * Real Hermes integration against the Hermes API Server runs API
@@ -55,8 +73,9 @@ export class ApiServerHermesProvider implements HermesProvider {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly instructions: string | undefined;
-  private readonly tasks = new Map<string, InternalTask>();
-  private readonly runIdToTaskId = new Map<string, string>();
+  private readonly terminalRetentionMs: number;
+  private readonly tasks: TTLMap<string, InternalTask>;
+  private readonly runIdToTaskId: TTLMap<string, string>;
   private readonly listeners = new Set<HermesProviderListener>();
 
   constructor(options: ApiServerHermesProviderOptions) {
@@ -70,6 +89,14 @@ export class ApiServerHermesProvider implements HermesProvider {
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.instructions = options.instructions;
+    this.terminalRetentionMs = options.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS;
+    const ttlOpts = {
+      maxEntries: options.maxEntries ?? DEFAULT_MAX_ENTRIES,
+      ttlMs: options.ttlMs ?? DEFAULT_TTL_MS,
+      clock: options.clock,
+    };
+    this.tasks = new TTLMap(ttlOpts);
+    this.runIdToTaskId = new TTLMap(ttlOpts);
   }
 
   onEvent(listener: HermesProviderListener): () => void {
@@ -78,7 +105,7 @@ export class ApiServerHermesProvider implements HermesProvider {
   }
 
   async createTask(input: CreateTaskInput): Promise<void> {
-    if (this.tasks.has(input.taskId)) {
+    if (this.tasks.get(input.taskId)) {
       throw new HermesProviderError("task_already_exists", `Task already exists: ${input.taskId}`);
     }
 
@@ -90,6 +117,7 @@ export class ApiServerHermesProvider implements HermesProvider {
       conversationHistory: [],
       pendingFollowups: [],
       startingRun: false,
+      cancelRequested: false,
     };
     this.tasks.set(input.taskId, internal);
 
@@ -118,16 +146,15 @@ export class ApiServerHermesProvider implements HermesProvider {
     const internal = this.requireTask(taskId);
     if (internal.terminal) throw new HermesProviderError("task_terminal");
 
+    internal.cancelRequested = true;
     internal.pendingFollowups = [];
     const runId = internal.runId;
     if (runId) {
       try {
         await this.request("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`, {});
       } catch (err) {
-        // If the run already finished, still settle as canceled locally.
-        if (!(err instanceof HermesProviderError && err.code === "run_not_found")) {
-          throw err;
-        }
+        // Run already finished / unknown — still settle as canceled locally.
+        if (!this.isBenignStopMiss(err)) throw err;
       }
     }
 
@@ -161,7 +188,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     conversationHistory: ConversationMessage[]
   ): Promise<void> {
     const internal = this.requireTask(taskId);
-    if (internal.terminal) return;
+    if (internal.terminal || internal.cancelRequested) return;
 
     internal.startingRun = true;
     try {
@@ -196,6 +223,20 @@ export class ApiServerHermesProvider implements HermesProvider {
         throw new HermesProviderError("upstream_error", "Hermes /v1/runs returned no run_id");
       }
 
+      // Cancel won the race while POST /v1/runs was in flight — stop the
+      // orphaned Hermes run and do not attach SSE or register maps.
+      if (internal.terminal || internal.cancelRequested) {
+        try {
+          await this.request("POST", `/v1/runs/${encodeURIComponent(runId)}/stop`, {});
+        } catch (err) {
+          if (!this.isBenignStopMiss(err)) {
+            // Best-effort stop already attempted; surface only unexpected failures.
+            throw err;
+          }
+        }
+        return;
+      }
+
       if (internal.runId) {
         this.runIdToTaskId.delete(internal.runId);
         internal.sseAbort?.abort();
@@ -204,6 +245,7 @@ export class ApiServerHermesProvider implements HermesProvider {
       internal.currentInput = input;
       internal.pendingApprovalId = undefined;
       this.runIdToTaskId.set(runId, taskId);
+      this.tasks.set(taskId, internal); // refresh TTL while run is live
       this.attachEventStream(taskId, runId);
     } finally {
       internal.startingRun = false;
@@ -248,7 +290,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     });
 
     if (!response.ok) {
-      throw await this.errorFromResponse(response);
+      throw await this.errorFromResponse(response, `/v1/runs/${runId}/events`);
     }
     if (!response.body) {
       throw new HermesProviderError("upstream_error", "Hermes SSE response had no body");
@@ -280,6 +322,21 @@ export class ApiServerHermesProvider implements HermesProvider {
         }
         this.handleRunEvent(taskId, runId, parsed);
       }
+    }
+
+    // Clean EOF without a terminal Hermes event (idle proxies like Cloudflare
+    // do this) must not leave the task stuck `running` forever.
+    const current = this.tasks.get(taskId);
+    if (current && !current.terminal && current.runId === runId && !signal.aborted) {
+      this.markTerminal(taskId, current);
+      this.emit({
+        type: "failed",
+        taskId,
+        error: {
+          message: "Hermes run event stream closed before the run settled",
+          code: "sse_closed_unexpectedly",
+        },
+      });
     }
   }
 
@@ -318,7 +375,7 @@ export class ApiServerHermesProvider implements HermesProvider {
         break;
       }
       case "approval.request": {
-        const approvalId = `appr_${runId}`;
+        const approvalId = `appr_${randomUUID()}`;
         internal.pendingApprovalId = approvalId;
         const action =
           (typeof event.action === "string" && event.action) ||
@@ -355,6 +412,18 @@ export class ApiServerHermesProvider implements HermesProvider {
           kind: "completed",
           output,
           usage: event.usage,
+        }).catch((err) => {
+          const current = this.tasks.get(taskId);
+          if (!current || current.terminal) return;
+          this.markTerminal(taskId, current);
+          this.emit({
+            type: "failed",
+            taskId,
+            error: {
+              message: err instanceof Error ? err.message : String(err),
+              code: err instanceof HermesProviderError ? err.code : "upstream_error",
+            },
+          });
         });
         break;
       }
@@ -428,7 +497,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     await this.startRun(taskId, next, history);
   }
 
-  private markTerminal(_taskId: string, internal: InternalTask): void {
+  private markTerminal(taskId: string, internal: InternalTask): void {
     internal.terminal = true;
     internal.startingRun = false;
     if (internal.runId) {
@@ -437,12 +506,23 @@ export class ApiServerHermesProvider implements HermesProvider {
     }
     internal.sseAbort?.abort();
     internal.sseAbort = undefined;
+    const cleanupTimer = setTimeout(() => {
+      this.tasks.delete(taskId);
+    }, this.terminalRetentionMs);
+    cleanupTimer.unref?.();
   }
 
   private requireTask(taskId: string): InternalTask {
     const internal = this.tasks.get(taskId);
     if (!internal) throw new HermesProviderError("task_not_found");
     return internal;
+  }
+
+  private isBenignStopMiss(err: unknown): boolean {
+    return (
+      err instanceof HermesProviderError &&
+      (err.code === "run_not_found" || err.code === "task_not_found")
+    );
   }
 
   private emit(event: HermesProviderEvent): void {
@@ -467,7 +547,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     });
 
     if (!response.ok) {
-      throw await this.errorFromResponse(response);
+      throw await this.errorFromResponse(response, path);
     }
 
     if (response.status === 204) return undefined as T;
@@ -476,7 +556,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     return JSON.parse(text) as T;
   }
 
-  private async errorFromResponse(response: Response): Promise<HermesProviderError> {
+  private async errorFromResponse(response: Response, path?: string): Promise<HermesProviderError> {
     let detail = response.statusText || `HTTP ${response.status}`;
     let code = "upstream_error";
     try {
@@ -498,7 +578,11 @@ export class ApiServerHermesProvider implements HermesProvider {
       // keep defaults
     }
 
-    if (response.status === 404) code = code === "upstream_error" ? "task_not_found" : code;
+    if (response.status === 404 && code === "upstream_error") {
+      // Run-scoped paths must not become task_not_found — cancel treats
+      // run_not_found as "already gone" and still settles locally.
+      code = path?.includes("/v1/runs/") ? "run_not_found" : "task_not_found";
+    }
     if (response.status === 409 && code === "upstream_error") code = "task_terminal";
 
     return new HermesProviderError(code, detail);

@@ -1,10 +1,10 @@
-.PHONY: bootstrap check bridge-install bridge-dev bridge-build bridge-test bridge-typecheck ios-generate dewey-smoke clean
+.PHONY: bootstrap check bridge-install bridge-dev bridge-build bridge-test bridge-typecheck ios-generate ios-test dewey-smoke clean
 
 # Installs deps and runs the full verification suite. Safe to run repeatedly.
 bootstrap: bridge-install
 
-# Runs everything CI runs: typecheck + tests. Does NOT attempt to build the
-# iOS app (no Xcode/iOS SDK on Linux CI; see docs/ARCHITECTURE.md).
+# Bridge typecheck + tests. iOS is verified separately via `make ios-test`
+# (requires Xcode + a simulator runtime on this Mac).
 check: bootstrap bridge-typecheck bridge-test
 	@bash bootstrap/check.sh
 
@@ -29,11 +29,18 @@ dewey-smoke:
 	bash scripts/dewey/smoke-bridge.sh
 
 # Regenerates ios/HermesVoice/HermesVoice.xcodeproj from project.yml.
-# Requires XcodeGen (https://github.com/yonaskolb/XcodeGen) and Xcode, so
-# this only works on macOS.
+# Requires XcodeGen (https://github.com/yonaskolb/XcodeGen) and Xcode.
 ios-generate:
 	cd ios/HermesVoice && xcodegen generate
+
+# Build + run HermesVoiceTests on the iOS Simulator. Requires Xcode and an
+# installed iOS Simulator runtime (`xcodebuild -downloadPlatform iOS`).
+ios-test: ios-generate
+	cd ios/HermesVoice && xcodebuild test -scheme HermesVoice \
+		-destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+		-only-testing:HermesVoiceTests
 
 clean:
 	rm -rf bridge/node_modules bridge/dist
 	rm -rf ios/HermesVoice/HermesVoice.xcodeproj
+	rm -rf ios/**/DerivedData

@@ -79,6 +79,9 @@ struct RealtimeToolDefinition: Equatable, @unchecked Sendable {
 enum RealtimeClientEvent: Equatable, @unchecked Sendable {
     case sessionUpdate(instructions: String, tools: [RealtimeToolDefinition], voice: String?)
     case functionCallOutput(callId: String, outputJSON: String)
+    /// Inject a short text item into the Realtime conversation (e.g. Hermes
+    /// progress) so the model can narrate it. PROTOCOL.md product loop.
+    case conversationMessage(role: String, text: String)
     case responseCreate
 
     func toJSONObject() -> [String: Any] {
@@ -107,6 +110,17 @@ enum RealtimeClientEvent: Equatable, @unchecked Sendable {
                     "type": "function_call_output",
                     "call_id": callId,
                     "output": outputJSON,
+                ],
+            ]
+        case let .conversationMessage(role, text):
+            return [
+                "type": "conversation.item.create",
+                "item": [
+                    "type": "message",
+                    "role": role,
+                    "content": [
+                        ["type": "input_text", "text": text],
+                    ],
                 ],
             ]
         case .responseCreate:

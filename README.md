@@ -30,12 +30,12 @@ rail shows what's in flight.
 
 | Piece | Status |
 |---|---|
-| `bridge/` backend (REST + SSE, auth, CORS, rate limiting) | **[IMPLEMENTED]** — 74 tests passing, strict TypeScript |
+| `bridge/` backend (REST + SSE, auth, CORS, rate limiting) | **[IMPLEMENTED]** — typecheck + tests pass (`make bridge-test`) |
 | `MockHermesProvider` (local task simulator) | **[IMPLEMENTED]**, honestly a mock — see PROTOCOL.md §5 |
 | Real Hermes integration (`ApiServerHermesProvider`) | **[IMPLEMENTED]** against Hermes API Server runs API when `HERMES_API_BASE_URL` + `HERMES_API_KEY` are set |
 | OpenAI ephemeral session minting | **[IMPLEMENTED]** as a real call; response schema is best-effort (see PROTOCOL.md §4) |
-| iOS app structure, state machine, tools, networking | **[IMPLEMENTED]** as source, **not compiled** in this environment (no Xcode/Swift toolchain here) |
-| WebRTC transport (peer connection engine) | **[SCAFFOLDED]** — signaling/SDP exchange is real; no concrete libwebrtc binary is vendored |
+| iOS app structure, state machine, tools, networking | **[IMPLEMENTED]** — compiles and unit tests pass on macOS (`make ios-test`) |
+| WebRTC transport (peer connection engine) | **[IMPLEMENTED]** via Stasel WebRTC (`StaselWebRTCEngine`); signaling was already real |
 
 See `docs/ARCHITECTURE.md` for the full breakdown and why each boundary is
 drawn where it is.

@@ -43,6 +43,7 @@ struct RootView: View {
     let backend = BackendClient(config: BridgeConfig(baseURL: URL(string: "http://localhost:8787")!))
     let sessionManager = ClientSessionManager(persistence: InMemorySessionPersistence())
     let bootstrapCredentialStore = BootstrapCredentialStore()
+    let instructionsHolder = SessionInstructionsHolder()
     RootView()
         .environmentObject(HermesVoiceStore(
             backend: backend,
@@ -51,10 +52,11 @@ struct RootView: View {
             coordinator: SessionCoordinator(
                 backend: backend,
                 sessionToken: { try await sessionManager.ensureSession { try await backend.bootstrapSession() }.sessionToken },
-                instructions: SessionState.defaultInstructions,
+                instructions: { instructionsHolder.current() },
                 toolDefinitions: ToolRegistry.realtimeToolDefinitions,
-                makeTransport: { WebRTCRealtimeTransport(engine: nil) }
-            )
+                makeTransport: { WebRTCRealtimeTransport(engine: makeWebRTCEngine()) }
+            ),
+            instructionsHolder: instructionsHolder
         ))
 }
 

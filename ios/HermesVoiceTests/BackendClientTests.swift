@@ -1,9 +1,8 @@
 import XCTest
 @testable import HermesVoice
 
-/// See SessionReducerTests.swift for the note on why these are written but
-/// not run in this repo's environment. Uses a `URLProtocol` stub so it
-/// never touches the network, matching bridge/test's fake-fetch approach.
+/// Uses a `URLProtocol` stub so it never touches the network, matching
+/// bridge/test's fake-fetch approach.
 final class BackendClientTests: XCTestCase {
     func testBootstrapSessionSendsNoAuthorizationHeader() async throws {
         var capturedRequest: URLRequest?

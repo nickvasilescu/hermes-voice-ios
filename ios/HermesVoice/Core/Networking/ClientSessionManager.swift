@@ -27,7 +27,7 @@ actor ClientSessionManager {
     /// Returns a valid session, restoring from persistence or minting a
     /// fresh one via `bootstrap` if necessary. Concurrent callers await the
     /// same in-flight mint rather than each triggering their own.
-    func ensureSession(bootstrap: @Sendable () async throws -> MintedClientSession) async throws -> StoredClientSession {
+    func ensureSession(bootstrap: @escaping @Sendable () async throws -> MintedClientSession) async throws -> StoredClientSession {
         if let current, current.expiresAt > Date() {
             return current
         }

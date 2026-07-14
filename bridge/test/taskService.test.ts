@@ -188,6 +188,12 @@ test("TaskService.approve resolves a pending approval and the task later complet
   assert.ok(approvalId);
 
   await service.approve("sess_1", task.id, approvalId as string, "approve");
+  const afterApprove = service.getTask("sess_1", task.id);
+  assert.equal(afterApprove.pendingApproval, undefined);
+  assert.ok(
+    afterApprove.status === "running" || afterApprove.status === "completed",
+    `expected running or completed immediately after approve, got ${afterApprove.status}`
+  );
   await waitUntil(() => service.getTask("sess_1", task.id).status === "completed");
   assert.equal(service.getTask("sess_1", task.id).pendingApproval, undefined);
 });

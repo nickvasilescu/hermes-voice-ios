@@ -162,6 +162,10 @@ export class TaskStore {
   clearPendingApproval(hermesSessionId: string, taskId: string): Task | undefined {
     return this.mutate(hermesSessionId, taskId, (task) => {
       delete task.pendingApproval;
+      // Resume work after the gate; leave terminal statuses alone.
+      if (task.status === "waiting_approval") {
+        task.status = "running";
+      }
       this.pushHistory(task, "approval_resolved", "Approval resolved.");
     });
   }

@@ -2,6 +2,17 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 
+// Defense-in-depth: provider bugs that forget a .catch() must not take
+// down the whole process (in-memory sessions/tasks would all vanish).
+process.on("unhandledRejection", (reason) => {
+  logger.error("process.unhandled_rejection", {
+    detail: reason instanceof Error ? reason.message : String(reason),
+  });
+});
+process.on("uncaughtException", (err) => {
+  logger.error("process.uncaught_exception", { detail: err.message });
+});
+
 const config = loadConfig(process.env);
 const { app } = createApp({ config });
 

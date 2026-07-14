@@ -23,11 +23,19 @@ final class HermesVoiceStore: ObservableObject {
     /// app session, not once per call.
     private var startTask: Task<Void, Never>?
 
-    init(backend: BackendClientProtocol, sessionManager: ClientSessionManager, bootstrapCredentialStore: BootstrapCredentialStore, coordinator: SessionCoordinator) {
+    init(
+        backend: BackendClientProtocol,
+        sessionManager: ClientSessionManager,
+        bootstrapCredentialStore: BootstrapCredentialStore,
+        coordinator: SessionCoordinator,
+        instructionsHolder: SessionInstructionsHolder? = nil
+    ) {
         self.backend = backend
         self.sessionManager = sessionManager
         self.bootstrapCredentialStore = bootstrapCredentialStore
         self.coordinator = coordinator
+
+        instructionsHolder?.store = self
 
         coordinator.onServerEvent = { [weak self] event in
             Task { @MainActor in self?.dispatch(.wire(event)) }
@@ -92,13 +100,32 @@ final class HermesVoiceStore: ObservableObject {
         }
 
         subscribeToTaskEvents()
+        await hydrateTasks()
 
         let result = await coordinator.start(voice: state.voice)
         switch result {
         case .success:
             break // .callEstablished arrives via the coordinator callback
-        case let .failure(message):
-            dispatch(.callEstablishmentFailed(message))
+        case let .failure(error):
+            dispatch(.callEstablishmentFailed(error.message))
+        }
+    }
+
+    /// `GET /v1/tasks` so the rail (and rotation recap) reflect work that
+    /// outlived a previous app launch. Dispatched before the call is
+    /// established so `.taskUpdated` merges state without narrating.
+    private func hydrateTasks() async {
+        do {
+            let token = try await sessionManager.ensureSession { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.bootstrapSession()
+            }.sessionToken
+            let tasks = try await backend.listTasks(sessionToken: token, status: nil)
+            for task in tasks {
+                dispatch(.taskUpdated(task))
+            }
+        } catch {
+            Log.error("could not hydrate tasks: \(error)")
         }
     }
 
@@ -123,8 +150,8 @@ final class HermesVoiceStore: ObservableObject {
                     switch result {
                     case .success:
                         self?.dispatch(.callEstablished)
-                    case let .failure(message):
-                        self?.dispatch(.callEstablishmentFailed(message))
+                    case let .failure(error):
+                        self?.dispatch(.callEstablishmentFailed(error.message))
                     }
                 }
             }

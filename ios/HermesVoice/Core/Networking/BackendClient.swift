@@ -11,7 +11,9 @@ import Foundation
 protocol BackendClientProtocol: Sendable {
     /// `POST /v1/session`. Production bridges may require the operator-entered
     /// bootstrap credential; it is sent only in the Authorization header.
-    func bootstrapSession(bootstrapCredential: String? = nil) async throws -> MintedClientSession
+    /// Protocol methods cannot have default arguments — call sites that want
+    /// `nil` use the `bootstrapSession()` convenience in the extension below.
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession
     func mintRealtimeSession(sessionToken: String, voice: String?) async throws -> RealtimeSessionResponse
     func createTask(sessionToken: String, instruction: String, context: [String: AnyCodable]?, clientRequestId: String?) async throws -> HermesTask
     func getTask(sessionToken: String, taskId: String) async throws -> HermesTask
@@ -19,6 +21,12 @@ protocol BackendClientProtocol: Sendable {
     func followup(sessionToken: String, taskId: String, message: String) async throws -> HermesTask
     func cancel(sessionToken: String, taskId: String, reason: String?) async throws -> HermesTask
     func approve(sessionToken: String, taskId: String, approvalId: String, decision: ApprovalDecision, note: String?) async throws -> HermesTask
+}
+
+extension BackendClientProtocol {
+    func bootstrapSession() async throws -> MintedClientSession {
+        try await bootstrapSession(bootstrapCredential: nil)
+    }
 }
 
 enum ApprovalDecision: String, Codable {
@@ -53,7 +61,7 @@ actor BackendClient: BackendClientProtocol {
         self.encoder = JSONEncoder()
     }
 
-    func bootstrapSession(bootstrapCredential: String? = nil) async throws -> MintedClientSession {
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession {
         try await send(path: "/v1/session", method: "POST", body: [:], sessionToken: bootstrapCredential)
     }
 

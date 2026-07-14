@@ -1,8 +1,6 @@
 import XCTest
 @testable import HermesVoice
 
-/// See SessionReducerTests.swift for the note on why these are written but
-/// not run in this repo's environment.
 final class ToolRegistryTests: XCTestCase {
     func testExactlyFiveToolsAreRegistered() {
         XCTAssertEqual(ToolRegistry.allTools.count, 5)
@@ -103,7 +101,7 @@ private actor FakeBackendClient: BackendClientProtocol {
     private(set) var lastClientRequestId: String?
     private(set) var lastSessionToken: String?
 
-    func bootstrapSession(bootstrapCredential: String? = nil) async throws -> MintedClientSession {
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession {
         MintedClientSession(sessionToken: "st_fake", hermesSessionId: "hs_fake", expiresAt: "2026-01-01T00:00:00Z")
     }
 

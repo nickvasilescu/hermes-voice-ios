@@ -9,10 +9,11 @@ struct HermesVoiceApp: App {
         let backend = BackendClient(config: BridgeConfig(baseURL: Config.bridgeBaseURL))
         let sessionManager = ClientSessionManager(persistence: KeychainSessionStore())
         let bootstrapCredentialStore = BootstrapCredentialStore()
-        // No WebRTCEngine is wired up in this repo (see
-        // Core/Transport/WebRTCRealtimeTransport.swift) — the app compiles
-        // and its state machine is fully testable, but a real device build
-        // needs a concrete engine injected here before voice actually works.
+        let instructionsHolder = SessionInstructionsHolder()
+        // WebRTC engine is wired via Stasel when available — see
+        // Core/Transport/StaselWebRTCEngine.swift. Until the package is
+        // resolved at build time, `makeWebRTCEngine()` may still return nil
+        // and voice stays scaffolded.
         let coordinator = SessionCoordinator(
             backend: backend,
             sessionToken: {
@@ -20,15 +21,16 @@ struct HermesVoiceApp: App {
                     try await backend.bootstrapSession(bootstrapCredential: await bootstrapCredentialStore.load())
                 }.sessionToken
             },
-            instructions: SessionState.defaultInstructions,
+            instructions: { instructionsHolder.current() },
             toolDefinitions: ToolRegistry.realtimeToolDefinitions,
-            makeTransport: { WebRTCRealtimeTransport(engine: nil) }
+            makeTransport: { WebRTCRealtimeTransport(engine: makeWebRTCEngine()) }
         )
         _store = StateObject(wrappedValue: HermesVoiceStore(
             backend: backend,
             sessionManager: sessionManager,
             bootstrapCredentialStore: bootstrapCredentialStore,
-            coordinator: coordinator
+            coordinator: coordinator,
+            instructionsHolder: instructionsHolder
         ))
     }
 

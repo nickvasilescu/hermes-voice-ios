@@ -1,0 +1,7 @@
+// Point this at your deployed bridge before shipping. No bearer
+// token/secret belongs in this file — the client session token is minted
+// at runtime (POST /v1/session) and stored only in Keychain. If your
+// deployment gates POST /v1/session with BRIDGE_BOOTSTRAP_SECRET (see
+// bridge/docs/SECURITY.md), that credential should come from real user
+// authentication in the app, never a value baked in here.
+BRIDGE_BASE_URL = https:/$()/your-bridge.example.com

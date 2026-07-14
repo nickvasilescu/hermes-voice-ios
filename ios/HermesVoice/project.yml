@@ -1,0 +1,71 @@
+name: HermesVoice
+options:
+  bundleIdPrefix: com.hermesvoice
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1" # iPhone only, per "iPhone-first"
+
+targets:
+  HermesVoice:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Core
+      - path: Features
+      - path: Support
+    resources:
+      - path: Resources/Info.plist
+        buildPhase: none # referenced via INFOPLIST_FILE, not copied as a resource
+    settings:
+      configs:
+        Debug:
+          xcconfig: Config/Debug.xcconfig
+        Release:
+          xcconfig: Config/Release.xcconfig
+      base:
+        INFOPLIST_FILE: Resources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.hermesvoice.app
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: Resources/Info.plist
+    # WebRTC is intentionally not declared as a package dependency here —
+    # see Core/Transport/WebRTCRealtimeTransport.swift. Adding one (e.g.
+    # https://github.com/stasel/WebRTC) is a real, human decision; do it by
+    # adding a `packages:` entry + a `dependencies:` entry on this target,
+    # then implement `WebRTCEngine` against it.
+
+  HermesVoiceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../HermesVoiceTests
+    dependencies:
+      - target: HermesVoice
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  HermesVoice:
+    build:
+      targets:
+        HermesVoice: all
+        HermesVoiceTests: [test]
+    test:
+      targets:
+        - HermesVoiceTests
+    run:
+      config: Debug

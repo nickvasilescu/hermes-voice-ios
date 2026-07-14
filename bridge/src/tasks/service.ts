@@ -118,6 +118,11 @@ export class TaskService {
     }
 
     await this.callProvider(() => this.provider.resolveApproval(taskId, approvalId, decision, note));
+    // Provider accepted the decision — clear the gate immediately so the
+    // rail / Realtime model don't keep prompting for the same approval
+    // while Hermes resumes the run.
+    const cleared = this.store.clearPendingApproval(hermesSessionId, taskId);
+    if (cleared) this.publish(hermesSessionId, "task.progress", cleared);
     return this.getTask(hermesSessionId, taskId);
   }
 

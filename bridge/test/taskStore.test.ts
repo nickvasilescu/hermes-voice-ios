@@ -136,6 +136,7 @@ test("TaskStore.setPendingApproval sets waiting_approval and clearing it restore
 
   const cleared = store.clearPendingApproval("sess_1", task.id);
   assert.equal(cleared?.pendingApproval, undefined);
+  assert.equal(cleared?.status, "running");
 });
 
 test("TaskStore.complete/fail/cancel set terminal state and result/error", () => {

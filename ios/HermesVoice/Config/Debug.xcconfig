@@ -1,0 +1,4 @@
+// Local development defaults. No bearer token/secret belongs in this file
+// — the client session token is minted at runtime (POST /v1/session) and
+// stored only in Keychain. See docs/SECURITY.md.
+BRIDGE_BASE_URL = http:/$()/localhost:8787

@@ -24,6 +24,17 @@ export interface Config {
   taskMaxEntries: number;
   idempotencyTtlMs: number;
   idempotencyMaxEntries: number;
+
+  /**
+   * Hermes API Server base URL (e.g. `http://127.0.0.1:8642`). When set
+   * together with `hermesApiKey`, the bridge uses `ApiServerHermesProvider`
+   * instead of the local mock.
+   */
+  hermesApiBaseUrl: string | undefined;
+  /** Bearer token matching Hermes `API_SERVER_KEY`. */
+  hermesApiKey: string | undefined;
+  /** Optional extra instructions layered onto every Hermes API run. */
+  hermesApiInstructions: string | undefined;
 }
 
 function parseIntStrict(value: string | undefined, fallback: number, name: string): number {
@@ -80,5 +91,9 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     taskMaxEntries: parseIntStrict(env.BRIDGE_TASK_MAX_ENTRIES, 5000, "BRIDGE_TASK_MAX_ENTRIES"),
     idempotencyTtlMs: parseIntStrict(env.BRIDGE_IDEMPOTENCY_TTL_MS, 24 * HOUR_MS, "BRIDGE_IDEMPOTENCY_TTL_MS"),
     idempotencyMaxEntries: parseIntStrict(env.BRIDGE_IDEMPOTENCY_MAX_ENTRIES, 5000, "BRIDGE_IDEMPOTENCY_MAX_ENTRIES"),
+
+    hermesApiBaseUrl: env.HERMES_API_BASE_URL?.trim() || undefined,
+    hermesApiKey: env.HERMES_API_KEY?.trim() || undefined,
+    hermesApiInstructions: env.HERMES_API_INSTRUCTIONS?.trim() || undefined,
   };
 }

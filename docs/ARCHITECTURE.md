@@ -46,9 +46,12 @@ headers, and wiring, not business logic a second time.
 deterministic-enough, asynchronous (progress arrives via `setTimeout`, not
 synchronously), and supports the full lifecycle including the approval
 gate (any instruction containing "approve" pauses for one). It is the
-default provider in dev and tests. A production deployment replaces it
-with a `HermesProvider` implementation that actually talks to Hermes —
-`bridge/src/app.ts` is the one line that would change.
+default provider in tests and when Hermes API env vars are unset.
+
+**`ApiServerHermesProvider`** talks to a live Hermes API Server
+(`HERMES_API_BASE_URL` + `HERMES_API_KEY`). `createApp` selects it
+automatically when both are set; otherwise the mock is used. See
+`docs/PROTOCOL.md` §5 and `.env.example`.
 
 **OpenAI ephemeral session minting is a real network call** to
 `https://api.openai.com/v1/realtime/client_secrets` with a real request

@@ -34,8 +34,8 @@ implementation stands in (e.g. `MockHermesProvider`).
                                                                             ▼
                                                                 ┌───────────────────────┐
                                                                 │  Hermes                │
-                                                                │  [SCAFFOLDED interface,│
-                                                                │   MOCKED local impl]   │
+                                                                │  MockHermesProvider or │
+                                                                │  ApiServerHermesProvider│
                                                                 └───────────────────────┘
 ```
 
@@ -286,14 +286,14 @@ interface Task {
 
 ---
 
-## 5. Hermes provider interface — `[SCAFFOLDED interface, MOCKED local impl]`
+## 5. Hermes provider interface — `[IMPLEMENTED: mock + API Server]`
 
 `bridge/src/hermes/provider.ts` defines the seam a real Hermes integration
 plugs into:
 
 ```ts
 interface HermesProvider {
-  createTask(input: { hermesSessionId: string; instruction: string; context?: unknown }): Promise<HermesTaskHandle>;
+  createTask(input: { taskId: string; hermesSessionId: string; instruction: string; context?: unknown }): Promise<void>;
   sendFollowup(taskId: string, message: string): Promise<void>;
   cancelTask(taskId: string, reason?: string): Promise<void>;
   resolveApproval(taskId: string, approvalId: string, decision: "approve" | "reject", note?: string): Promise<void>;
@@ -302,16 +302,19 @@ interface HermesProvider {
 ```
 
 `bridge/src/hermes/mockProvider.ts` is a working, deterministic-enough local
-implementation used by default in dev and in tests: it queues a task,
-transitions `queued → running` immediately, emits 2-3 synthetic progress
-events, and completes after a short delay. Instructions containing the
-literal word `"approve"` synthesize a `waiting_approval` gate first, so the
-approve/reject path is exercisable end-to-end without a real Hermes. This is
-explicitly a mock, not a stub — it is real, tested, deterministic code, but
-it is not connected to a real Hermes deployment. Swapping in a real Hermes
-means implementing `HermesProvider` and wiring it in
-`bridge/src/app.ts` in place of `MockHermesProvider`.
+implementation used by default in tests and when Hermes API env vars are
+unset: it queues a task, transitions `queued → running` immediately, emits
+2-3 synthetic progress events, and completes after a short delay.
+Instructions containing the literal word `"approve"` synthesize a
+`waiting_approval` gate first, so the approve/reject path is exercisable
+end-to-end without a real Hermes.
 
+`bridge/src/hermes/apiServerProvider.ts` is the real integration against
+Hermes API Server (`POST /v1/runs`, SSE `/v1/runs/{id}/events`, `/stop`,
+`/approval`). Enable it by setting both `HERMES_API_BASE_URL` and
+`HERMES_API_KEY` (see `.env.example`). The bridge keeps its own `task_*`
+ids and maps them to Hermes `run_*` ids; follow-ups that arrive mid-run are
+queued and drained as successive runs on the same `session_id`.
 ---
 
 ## 6. Session lifecycle & rotation — `[IMPLEMENTED on the reducer/coordinator level, SCAFFOLDED at the WebRTC binary level]`

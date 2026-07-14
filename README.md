@@ -98,11 +98,27 @@ xcodegen generate
 open HermesVoice.xcodeproj
 ```
 
-Set `BRIDGE_BASE_URL` in `Config/Debug.xcconfig` to your bridge's address
-(the iOS Simulator can reach `http://localhost:8787` directly; a physical
-device needs your Mac's LAN IP or a tunnel). Voice will not actually
-connect until a concrete `WebRTCEngine` is wired into
-`WebRTCRealtimeTransport` — see `docs/ARCHITECTURE.md`.
+`Config/Debug.xcconfig` points at the Dewey Cloudflare tunnel
+(`https://dewey-bridge.momentumclaw.app`) so a physical device can reach
+the bridge without being on Dewey's LAN. Flip it back to
+`http://localhost:8787` if the bridge is only running on your Mac.
+
+Voice audio still needs a concrete `WebRTCEngine` wired into
+`WebRTCRealtimeTransport` — see `docs/ARCHITECTURE.md`. You can already
+exercise bridge health, session mint, task lifecycle, and (with
+`OPENAI_API_KEY`) Realtime credential minting from the device.
+
+### Dewey bridge (Orgo laptop ↔ phone)
+
+On Dewey (tunnel already configured for `dewey-bridge.momentumclaw.app`):
+
+```bash
+cd ~/Desktop/repos/hermes-voice-ios
+# optional live Realtime — otherwise bridge uses BRIDGE_MOCK_OPENAI=1
+# printf '%s\n' 'sk-...' > /root/.hermes/voice_bridge_openai_api_key && chmod 600 $_
+bash scripts/dewey/start-bridge.sh
+bash scripts/dewey/smoke-bridge.sh
+```
 
 ### Everything at once
 

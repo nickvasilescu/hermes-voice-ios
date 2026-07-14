@@ -1,4 +1,4 @@
-.PHONY: bootstrap check bridge-install bridge-dev bridge-build bridge-test bridge-typecheck ios-generate clean
+.PHONY: bootstrap check bridge-install bridge-dev bridge-build bridge-test bridge-typecheck ios-generate dewey-smoke clean
 
 # Installs deps and runs the full verification suite. Safe to run repeatedly.
 bootstrap: bridge-install
@@ -22,6 +22,11 @@ bridge-test:
 
 bridge-typecheck:
 	cd bridge && npm run typecheck
+
+# Hits the public Dewey tunnel (health → session → Hermes task → realtime mint).
+# Requires the bridge to be running on Dewey; see scripts/dewey/.
+dewey-smoke:
+	bash scripts/dewey/smoke-bridge.sh
 
 # Regenerates ios/HermesVoice/HermesVoice.xcodeproj from project.yml.
 # Requires XcodeGen (https://github.com/yonaskolb/XcodeGen) and Xcode, so

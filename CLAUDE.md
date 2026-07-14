@@ -17,9 +17,10 @@ response shape, tool schema, or SSE event — it is the source of truth both
   credentials in code, tests, docs, or commit messages. Tests that need an
   OpenAI response use an injected fake `fetch`, never a real key.
 - **Don't claim iOS compiles or tests pass unless you actually ran them.**
-  This environment may not have Xcode/a Swift toolchain. If you can't run
-  `swift test` or `xcodebuild`, say exactly that instead of asserting
-  success. It is always safe to say "written, not compiled here."
+  This Mac has Xcode; use `make ios-test` (or `xcodegen generate` +
+  `xcodebuild test -scheme HermesVoice`) and report real results. If a
+  simulator runtime is missing, `xcodebuild -downloadPlatform iOS` first.
+  Never assert green without running.
 - **`bridge/` changes need tests run for real.** `npm run typecheck && npm
   test` inside `bridge/`, not just "should pass." Paste/report actual
   results.

@@ -1,10 +1,9 @@
 import XCTest
 @testable import HermesVoice
 
-/// See SessionReducerTests.swift for the note on why these are written but
-/// not run in this repo's environment. Exercises `SessionCoordinator`
-/// against a fake `RealtimeTransport` so these run with no network and no
-/// real WebRTC engine.
+/// Exercises `SessionCoordinator` against a fake `RealtimeTransport` so
+/// these run with no network and no real WebRTC engine.
+@MainActor
 final class SessionCoordinatorTests: XCTestCase {
     func testStartEstablishesACallAndForwardsPostHandshakeEvents() async throws {
         let factory = FakeTransportFactory()
@@ -131,7 +130,7 @@ private func makeCoordinator(factory: FakeTransportFactory) -> SessionCoordinato
 // MARK: - Test doubles
 
 private actor NeverCalledBackend: BackendClientProtocol {
-    func bootstrapSession(bootstrapCredential: String? = nil) async throws -> MintedClientSession {
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession {
         MintedClientSession(sessionToken: "st_test", hermesSessionId: "hs_test", expiresAt: "2026-01-01T00:00:00.000Z")
     }
     func mintRealtimeSession(sessionToken: String, voice: String?) async throws -> RealtimeSessionResponse {

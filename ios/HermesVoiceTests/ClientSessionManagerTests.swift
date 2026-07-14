@@ -1,10 +1,8 @@
 import XCTest
 @testable import HermesVoice
 
-/// See SessionReducerTests.swift for the note on why these are written but
-/// not run in this repo's environment. Uses an in-memory
-/// `ClientSessionPersisting` double instead of the real Keychain, which
-/// isn't reliably usable from a plain logic-test bundle.
+/// Uses an in-memory `ClientSessionPersisting` double instead of the real
+/// Keychain, which isn't reliably usable from a plain logic-test bundle.
 final class ClientSessionManagerTests: XCTestCase {
     func testEnsureSessionBootstrapsOnceAndReusesTheResult() async throws {
         let persistence = InMemorySessionPersistence()

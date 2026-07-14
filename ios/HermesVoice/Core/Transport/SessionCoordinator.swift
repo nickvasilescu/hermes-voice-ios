@@ -55,9 +55,19 @@ final class SessionCoordinator: @unchecked Sendable {
     /// rotate the established call itself on this cadence. This is
     /// unrelated to (and shorter than) any single ephemeral credential's
     /// own expiry, which only matters for how long *connecting* may take.
-    static let defaultCallLifetimeSeconds: TimeInterval = 55 * 60
+    /// `nonisolated` so it can be used as a default argument (defaults are
+    /// evaluated in a nonisolated context).
+    nonisolated static let defaultCallLifetimeSeconds: TimeInterval = 55 * 60
     private static let handshakeTimeoutSeconds: TimeInterval = 15
     private static let rotationRetryDelaySeconds: TimeInterval = 30
+
+    /// Failure type for `start` / reconnect — `Result`'s `Failure` must be
+    /// `Error`, so a bare `String` is illegal.
+    struct ConnectError: Error, Equatable, CustomStringConvertible {
+        let message: String
+        var description: String { message }
+        init(_ message: String) { self.message = message }
+    }
 
     private let backend: BackendClientProtocol
     private let sessionToken: @Sendable () async throws -> String
@@ -101,7 +111,7 @@ final class SessionCoordinator: @unchecked Sendable {
     /// that want true no-op idempotency on top of this belong at the
     /// `HermesVoiceStore` layer (see its `start()`), which already knows
     /// whether it has ever called this.
-    func start(voice: String?) async -> Result<Void, String> {
+    func start(voice: String?) async -> Result<Void, ConnectError> {
         await mutex.withLock { await self.connectNewPrimary(voice: voice) }
     }
 
@@ -109,7 +119,7 @@ final class SessionCoordinator: @unchecked Sendable {
         try? primaryTransport?.send(event)
     }
 
-    func scheduleReconnect(after delay: TimeInterval, voice: String?, onReconnected: @escaping (Result<Void, String>) -> Void) {
+    func scheduleReconnect(after delay: TimeInterval, voice: String?, onReconnected: @escaping (Result<Void, ConnectError>) -> Void) {
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
@@ -139,7 +149,7 @@ final class SessionCoordinator: @unchecked Sendable {
 
     // MARK: - Establishing a call (shared by first start and reconnect)
 
-    private func connectNewPrimary(voice: String?) async -> Result<Void, String> {
+    private func connectNewPrimary(voice: String?) async -> Result<Void, ConnectError> {
         do {
             let credential = try await mintCredential(voice: voice)
             let generation = nextGeneration()
@@ -153,7 +163,7 @@ final class SessionCoordinator: @unchecked Sendable {
             onCallEstablished?()
             return .success(())
         } catch {
-            return .failure(String(describing: error))
+            return .failure(ConnectError(String(describing: error)))
         }
     }
 

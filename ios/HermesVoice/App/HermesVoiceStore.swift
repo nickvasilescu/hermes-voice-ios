@@ -97,8 +97,8 @@ final class HermesVoiceStore: ObservableObject {
         switch result {
         case .success:
             break // .callEstablished arrives via the coordinator callback
-        case let .failure(message):
-            dispatch(.callEstablishmentFailed(message))
+        case let .failure(error):
+            dispatch(.callEstablishmentFailed(error.message))
         }
     }
 
@@ -123,8 +123,8 @@ final class HermesVoiceStore: ObservableObject {
                     switch result {
                     case .success:
                         self?.dispatch(.callEstablished)
-                    case let .failure(message):
-                        self?.dispatch(.callEstablishmentFailed(message))
+                    case let .failure(error):
+                        self?.dispatch(.callEstablishmentFailed(error.message))
                     }
                 }
             }

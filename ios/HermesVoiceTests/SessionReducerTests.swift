@@ -2,10 +2,7 @@ import XCTest
 @testable import HermesVoice
 
 /// Pure reducer tests — no networking, no WebRTC, no XCUIApplication.
-/// NOTE: this repo was built in a Linux environment without Xcode or a
-/// Swift toolchain, so these tests are written but have not been compiled
-/// or run here. Run with `xcodebuild test -scheme HermesVoice` (or in
-/// Xcode) before relying on them. See CLAUDE.md.
+/// Run with `xcodebuild test -scheme HermesVoice` (or in Xcode).
 final class SessionReducerTests: XCTestCase {
     func makeState() -> SessionState {
         SessionState(toolDefinitions: [])

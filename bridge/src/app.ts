@@ -1,6 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { ClientSessionStore } from "./auth/clientSession.js";
 import type { Config } from "./config.js";
+import { ApiServerHermesProvider } from "./hermes/apiServerProvider.js";
 import { HermesProviderError, type HermesProvider } from "./hermes/provider.js";
 import { MockHermesProvider } from "./hermes/mockProvider.js";
 import { asyncHandler } from "./http/asyncHandler.js";
@@ -55,7 +56,16 @@ export function createApp(deps: AppDependencies): BuiltApp {
     idempotencyMaxEntries: config.idempotencyMaxEntries,
   });
   const taskEventBus = new TaskEventBus();
-  const hermesProvider = deps.hermesProvider ?? new MockHermesProvider();
+  const hermesProvider =
+    deps.hermesProvider ??
+    (config.hermesApiBaseUrl && config.hermesApiKey
+      ? new ApiServerHermesProvider({
+          baseUrl: config.hermesApiBaseUrl,
+          apiKey: config.hermesApiKey,
+          fetchImpl,
+          instructions: config.hermesApiInstructions,
+        })
+      : new MockHermesProvider());
   const taskService = new TaskService(store, hermesProvider, taskEventBus, (err) => {
     logger.error("hermes_provider.async_error", { detail: err instanceof Error ? err.message : String(err) });
   });

@@ -78,4 +78,17 @@ test("loadConfig parses session/task/idempotency TTL and cap overrides", () => {
   assert.equal(config.idempotencyTtlMs, 3000);
   assert.equal(config.idempotencyMaxEntries, 30);
   assert.equal(config.rateLimitMaxEntries, 40);
+  assert.equal(config.hermesApiBaseUrl, undefined);
+  assert.equal(config.hermesApiKey, undefined);
+});
+
+test("loadConfig reads Hermes API Server settings", () => {
+  const config = loadConfig({
+    HERMES_API_BASE_URL: " http://127.0.0.1:8642/ ",
+    HERMES_API_KEY: " secret ",
+    HERMES_API_INSTRUCTIONS: " be brief ",
+  });
+  assert.equal(config.hermesApiBaseUrl, "http://127.0.0.1:8642/");
+  assert.equal(config.hermesApiKey, "secret");
+  assert.equal(config.hermesApiInstructions, "be brief");
 });

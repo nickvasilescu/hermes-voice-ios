@@ -64,7 +64,9 @@ test("GET /v1/tasks/:taskId rejects a malformed taskId", async () => {
 
 test("full task lifecycle: create, get, list, followup, and completion via SSE-observable state", async () => {
   const server = await startAuthedTestServer(
-    {},
+    // Polling every 10ms would otherwise exhaust the default 60/min rate limit
+    // before the slow mock (200–260ms steps) reaches completed.
+    { rateLimitMax: 10_000 },
     { hermesProvider: new MockHermesProvider({ minDelayMs: 200, maxDelayMs: 260 }) }
   );
   try {

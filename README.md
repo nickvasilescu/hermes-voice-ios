@@ -32,7 +32,7 @@ rail shows what's in flight.
 |---|---|
 | `bridge/` backend (REST + SSE, auth, CORS, rate limiting) | **[IMPLEMENTED]** — 74 tests passing, strict TypeScript |
 | `MockHermesProvider` (local task simulator) | **[IMPLEMENTED]**, honestly a mock — see PROTOCOL.md §5 |
-| Real Hermes integration | **[SCAFFOLDED]** — `HermesProvider` interface only, no backend wired |
+| Real Hermes integration (`ApiServerHermesProvider`) | **[IMPLEMENTED]** against Hermes API Server runs API when `HERMES_API_BASE_URL` + `HERMES_API_KEY` are set |
 | OpenAI ephemeral session minting | **[IMPLEMENTED]** as a real call; response schema is best-effort (see PROTOCOL.md §4) |
 | iOS app structure, state machine, tools, networking | **[IMPLEMENTED]** as source, **not compiled** in this environment (no Xcode/Swift toolchain here) |
 | WebRTC transport (peer connection engine) | **[SCAFFOLDED]** — signaling/SDP exchange is real; no concrete libwebrtc binary is vendored |
@@ -45,7 +45,7 @@ drawn where it is.
 ```
 bridge/                Node 22 + TypeScript backend
   src/tasks/            task store, event bus, orchestration service
-  src/hermes/           HermesProvider interface + local mock
+  src/hermes/           HermesProvider interface, MockHermesProvider, ApiServerHermesProvider
   src/http/             routes, validation, middleware (auth/cors/rate limit)
   src/openai/           ephemeral Realtime session client
   test/                 74 tests, node:test
@@ -76,8 +76,11 @@ Without an `OPENAI_API_KEY`, `POST /v1/realtime/session` returns `500
 openai_api_key_missing` — set `BRIDGE_MOCK_OPENAI=1` in `.env` to get an
 obviously-fake credential instead and exercise the rest of the stack
 without an OpenAI account. `MockHermesProvider` is the default task
-provider either way, so task delegation/progress/approval flows work fully
-locally regardless of OpenAI configuration.
+provider when Hermes API env vars are unset, so task
+delegation/progress/approval flows work fully locally regardless of OpenAI
+configuration. Point `HERMES_API_BASE_URL` + `HERMES_API_KEY` at a running
+Hermes API Server (gateway with `API_SERVER_ENABLED=true`) to use Dewey (or
+any other Hermes host) for real task execution.
 
 ```bash
 npm run typecheck   # tsc --noEmit, strict

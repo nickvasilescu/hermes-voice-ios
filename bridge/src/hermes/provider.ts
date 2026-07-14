@@ -2,9 +2,8 @@ import type { TaskError } from "../types.js";
 
 /**
  * The seam a real Hermes deployment plugs into. See docs/PROTOCOL.md §5.
- * This interface is [SCAFFOLDED]: it is real, typed, and exercised by tests
- * against MockHermesProvider, but no concrete network-calling implementation
- * against a real Hermes deployment ships in this repo.
+ * Implementations: `MockHermesProvider` (local) and `ApiServerHermesProvider`
+ * (Hermes API Server `/v1/runs` + SSE).
  */
 export interface CreateTaskInput {
   taskId: string;

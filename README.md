@@ -110,7 +110,15 @@ exercise bridge health, session mint, task lifecycle, and (with
 
 ### Dewey bridge (Orgo laptop ↔ phone)
 
-On Dewey (tunnel already configured for `dewey-bridge.momentumclaw.app`):
+On Dewey the Cloudflare hostname `dewey-bridge.momentumclaw.app` is **shared**:
+
+| Path | Service |
+|---|---|
+| `/hooks/*` | Hermes AgentPhone iMessage webhooks (`:8788`) |
+| everything else | Hermes Voice bridge (`:8787`) |
+
+See `scripts/dewey/cloudflared.ingress.yml`. Pointing the whole hostname at
+the voice bridge breaks iMessage — don’t do that.
 
 ```bash
 cd ~/Desktop/repos/hermes-voice-ios

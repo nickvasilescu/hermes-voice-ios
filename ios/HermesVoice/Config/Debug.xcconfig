@@ -1,11 +1,11 @@
-# Local / device debug defaults. No bearer token/secret belongs in this file
-# — the client session token is minted at runtime (POST /v1/session) and
-# stored only in Keychain. See docs/SECURITY.md.
-#
-# Xcode treats `//` as a comment, so we split the scheme with `/$()/`.
-#
-# Dewey public tunnel (Cloudflare → bridge :8787). Use this so a physical
-# device or a Simulator that can't reach Dewey's LAN still hits the bridge.
-# For a bridge running only on your Mac, switch back to:
-#   BRIDGE_BASE_URL = http:/$()/localhost:8787
+// Local / device debug defaults. No bearer token/secret belongs in this file
+// — the client session token is minted at runtime (POST /v1/session) and
+// stored only in Keychain. See docs/SECURITY.md.
+//
+// Xcode treats `//` as a comment, so we split the scheme with `/$()/`.
+//
+// Dewey public tunnel (Cloudflare → bridge :8787). Use this so a physical
+// device or a Simulator that can't reach Dewey's LAN still hits the bridge.
+// For a bridge running only on your Mac, switch back to:
+//   BRIDGE_BASE_URL = http:/$()/localhost:8787
 BRIDGE_BASE_URL = https:/$()/dewey-bridge.momentumclaw.app

@@ -103,10 +103,9 @@ open HermesVoice.xcodeproj
 the bridge without being on Dewey's LAN. Flip it back to
 `http://localhost:8787` if the bridge is only running on your Mac.
 
-Voice audio still needs a concrete `WebRTCEngine` wired into
-`WebRTCRealtimeTransport` — see `docs/ARCHITECTURE.md`. You can already
-exercise bridge health, session mint, task lifecycle, and (with
-`OPENAI_API_KEY`) Realtime credential minting from the device.
+Voice audio uses `StaselWebRTCEngine` through `WebRTCRealtimeTransport`.
+With the Dewey bridge running and `OPENAI_API_KEY` configured there, the app
+can establish the full Realtime WebRTC audio session from the device.
 
 ### Dewey bridge (Orgo laptop ↔ phone)
 

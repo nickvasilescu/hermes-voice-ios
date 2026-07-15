@@ -28,6 +28,11 @@ if git ls-files --error-unmatch bridge/.env >/dev/null 2>&1; then
 fi
 ok "no tracked .env file"
 
+if git grep -nE '(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' -- . ':!package-lock.json' >/dev/null; then
+  fail "tracked source contains a likely credential literal"
+fi
+ok "no obvious tracked credential literal"
+
 # --- Backend install/typecheck/test ---
 pushd bridge >/dev/null
 if [ ! -d node_modules ]; then

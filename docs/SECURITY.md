@@ -11,6 +11,10 @@ Candid status: this is an MVP scaffold. The protections below are implemented, b
 - `.env` is ignored, while the bootstrap script and CI reject a tracked `.env`.
 - Structured logs recursively redact authorization, API keys, tokens, passwords, and OpenAI client-secret values.
 - `BRIDGE_MOCK_OPENAI=1` emits an unmistakable `mock_ek_` development credential and must not be enabled in production.
+- Dewey's production wrapper resolves `op://` references in memory with
+  `op run`; `bridge/.env.refs` contains references and non-secret settings,
+  never resolved values. The bridge listens on loopback and is owned by
+  Supervisor; Cloudflare remains the only intended public ingress.
 
 ## Authentication and session authorization
 
@@ -21,6 +25,11 @@ Candid status: this is an MVP scaffold. The protections below are implemented, b
 3. Only the token hash and its session binding are retained server-side.
 4. Every task, SSE, and Realtime-credential request requires the minted bearer token.
 5. Middleware resolves `hermesSessionId` from the server-side binding. The client cannot choose, forge, or override another session ID.
+
+If a bridge restart forgets an otherwise unexpired Keychain token, protected
+requests recover once: the client invalidates that token, bootstraps a fresh
+session with the operator credential, and retries once. A second `401` never
+loops. A bootstrap `401` returns to the credential prompt.
 
 The static bootstrap secret is not a mobile-app credential. Do not bundle it in iOS. For a real deployment, replace or front the bootstrap seam with authenticated login, passkeys, Sign in with Apple, managed-device identity, or attestation. An open bootstrap endpoint is permitted only in explicit non-production development mode.
 

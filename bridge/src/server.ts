@@ -42,8 +42,9 @@ if (config.hermesApiBaseUrl && config.hermesApiKey) {
   });
 }
 
-app.listen(config.port, () => {
+app.listen(config.port, config.host, () => {
   logger.info("startup.listening", {
+    host: config.host,
     port: config.port,
     nodeEnv: config.nodeEnv,
     mockOpenAI: config.mockOpenAI,

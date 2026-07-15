@@ -1,80 +1,44 @@
 #!/usr/bin/env bash
-# Start (or restart) the Hermes Voice bridge on Dewey for the Cloudflare tunnel
-# hostname dewey-bridge.momentumclaw.app → http://127.0.0.1:8787.
-#
-# Safe to re-run. Secrets stay in bridge/.env (gitignored) on the host.
+# Start/restart the bridge. Prefer Supervisor when installed; retain a
+# bounded fallback for first deployment only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BRIDGE="$ROOT/bridge"
-ENV_FILE="$BRIDGE/.env"
 LOG="${HERMES_VOICE_BRIDGE_LOG:-/tmp/hermes-voice-bridge.log}"
 PID_FILE="${HERMES_VOICE_BRIDGE_PID:-/tmp/hermes-voice-bridge.pid}"
 PORT="${PORT:-8787}"
 
-export PATH="${HOME}/.hermes/node/bin:/usr/local/bin:${PATH}"
+bash "$(dirname "$0")/refresh-env.sh"
 
-# Refresh secrets from 1Password / on-host key files when available.
-if [[ -x "$(dirname "$0")/refresh-env.sh" ]]; then
-  bash "$(dirname "$0")/refresh-env.sh"
-elif [[ ! -f "$ENV_FILE" ]]; then
-  echo "missing $ENV_FILE — run scripts/dewey/refresh-env.sh or copy .env.example" >&2
-  exit 1
-fi
-
-# Stop previous bridge if we own the pidfile / port.
-if [[ -f "$PID_FILE" ]]; then
-  old="$(cat "$PID_FILE" || true)"
-  if [[ -n "${old:-}" ]] && kill -0 "$old" 2>/dev/null; then
-    kill "$old" || true
-    sleep 1
-  fi
-  rm -f "$PID_FILE"
-fi
-if command -v fuser >/dev/null 2>&1; then
-  fuser -k "${PORT}/tcp" 2>/dev/null || true
+if command -v supervisorctl >/dev/null 2>&1 && supervisorctl status hermes-voice-bridge >/dev/null 2>&1; then
+  supervisorctl restart hermes-voice-bridge
 else
-  # Portable fallback: kill node listeners on PORT.
-  python3 - "$PORT" <<'PY' || true
-import os, signal, sys
-port = sys.argv[1]
-for pid in os.listdir("/proc"):
-    if not pid.isdigit():
-        continue
-    try:
-        fds = os.listdir(f"/proc/{pid}/fd")
-    except Exception:
-        continue
-    # cheap heuristic via cmdline
-    try:
-        cmd = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", "ignore")
-    except Exception:
-        continue
-    if "src/server.ts" in cmd or "dist/server.js" in cmd:
-        os.kill(int(pid), signal.SIGTERM)
-PY
-fi
-sleep 1
-
-cd "$BRIDGE"
-# Ensure deps
-if [[ ! -d node_modules ]]; then
-  npm install
+  echo "warning: Supervisor entry absent; using temporary nohup fallback" >&2
+  if [[ -f "$PID_FILE" ]]; then
+    old="$(tr -cd '0-9' <"$PID_FILE")"
+    if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
+      kill "$old"
+      for _ in $(seq 1 40); do
+        kill -0 "$old" 2>/dev/null || break
+        sleep 0.25
+      done
+    fi
+  fi
+  nohup "$ROOT/scripts/dewey/run-bridge.sh" >>"$LOG" 2>&1 &
+  printf '%s\n' "$!" >"$PID_FILE"
 fi
 
-nohup node --env-file-if-exists=.env --import tsx src/server.ts >>"$LOG" 2>&1 &
-echo $! >"$PID_FILE"
-echo "started pid=$(cat "$PID_FILE") port=$PORT log=$LOG"
-
-for i in $(seq 1 40); do
+for _ in $(seq 1 80); do
   if curl -sf "http://127.0.0.1:${PORT}/v1/health" >/dev/null; then
-    curl -sf "http://127.0.0.1:${PORT}/v1/health"
-    echo
+    echo "bridge healthy on loopback:${PORT}"
     exit 0
   fi
   sleep 0.25
 done
 
-echo "bridge failed to become healthy; last log lines:" >&2
-tail -n 40 "$LOG" >&2 || true
+echo "bridge failed to become healthy" >&2
+if command -v supervisorctl >/dev/null 2>&1; then
+  supervisorctl status hermes-voice-bridge >&2 || true
+fi
+tail -n 40 "$LOG" >&2 2>/dev/null || true
 exit 1

@@ -5,6 +5,7 @@ import { loadConfig } from "../src/config.js";
 test("loadConfig applies sane defaults with an empty environment", () => {
   const config = loadConfig({});
   assert.equal(config.nodeEnv, "development");
+  assert.equal(config.host, "127.0.0.1");
   assert.equal(config.port, 8787);
   assert.equal(config.mockOpenAI, false);
   assert.deepEqual(config.corsAllowlist, []);
@@ -49,6 +50,10 @@ test("loadConfig parses numeric overrides", () => {
   assert.equal(config.rateLimitMax, 10);
   assert.equal(config.rateLimitWindowMs, 5000);
   assert.equal(config.ssePingMs, 2000);
+});
+
+test("loadConfig accepts an explicit listen host", () => {
+  assert.equal(loadConfig({ HOST: " 0.0.0.0 " }).host, "0.0.0.0");
 });
 
 test("loadConfig throws on a non-numeric PORT", () => {

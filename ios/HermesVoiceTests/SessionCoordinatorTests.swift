@@ -99,6 +99,30 @@ final class SessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(factory.transports.count, 0)
     }
 
+    func testRotationBootstrap401PromptsWithoutDroppingTheCurrentCall() async throws {
+        let factory = FakeTransportFactory()
+        let backend = RotationUnauthorizedBackend()
+        let coordinator = SessionCoordinator(
+            backend: backend,
+            sessionToken: { "st_test" },
+            instructions: { "test instructions" },
+            toolDefinitions: [],
+            callLifetimeSeconds: 3600,
+            makeTransport: { factory.makeTransport() }
+        )
+        let startResult = await coordinator.start(voice: nil)
+        guard case .success = startResult else { return XCTFail("expected initial connection") }
+        let original = try XCTUnwrap(factory.transports.first)
+
+        var prompted = false
+        coordinator.onBootstrapCredentialRequired = { prompted = true }
+        await coordinator.rotate(voice: nil)
+
+        XCTAssertTrue(prompted)
+        XCTAssertFalse(original.didDisconnect, "an auth failure during rotation must leave the live call untouched")
+        XCTAssertEqual(factory.transports.count, 1, "the credential failed before a replacement transport was created")
+    }
+
     func testStartThenRotateGoThroughTheSameSerializedPathAndCreateExactlyOneTransportEach() async throws {
         // Regression test for the "actually track rotatingTransport" /
         // serialization bug: start and rotate share one AsyncMutex, so a
@@ -145,6 +169,35 @@ private actor NeverCalledBackend: BackendClientProtocol {
     func createTask(sessionToken: String, instruction: String, context: [String: AnyCodable]?, clientRequestId: String?) async throws -> HermesTask {
         fatalError("not exercised in SessionCoordinatorTests")
     }
+    func getTask(sessionToken: String, taskId: String) async throws -> HermesTask { fatalError("not exercised") }
+    func listTasks(sessionToken: String, status: HermesTaskStatus?) async throws -> [HermesTask] { fatalError("not exercised") }
+    func followup(sessionToken: String, taskId: String, message: String) async throws -> HermesTask { fatalError("not exercised") }
+    func cancel(sessionToken: String, taskId: String, reason: String?) async throws -> HermesTask { fatalError("not exercised") }
+    func approve(sessionToken: String, taskId: String, approvalId: String, decision: ApprovalDecision, note: String?) async throws -> HermesTask { fatalError("not exercised") }
+}
+
+private actor RotationUnauthorizedBackend: BackendClientProtocol {
+    private var mintCount = 0
+
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession {
+        fatalError("not exercised")
+    }
+
+    func mintRealtimeSession(sessionToken: String, voice: String?) async throws -> RealtimeSessionResponse {
+        mintCount += 1
+        if mintCount > 1 {
+            throw BackendClientError.http(status: 401, code: "unauthorized", detail: nil)
+        }
+        return RealtimeSessionResponse(
+            sessionId: "sess_initial",
+            model: "gpt-realtime-2.1",
+            clientSecret: RealtimeClientSecret(value: "ek_initial", expiresAt: "2026-01-01T00:00:00.000Z"),
+            createdAt: "2026-01-01T00:00:00.000Z",
+            expiresInSeconds: 60
+        )
+    }
+
+    func createTask(sessionToken: String, instruction: String, context: [String: AnyCodable]?, clientRequestId: String?) async throws -> HermesTask { fatalError("not exercised") }
     func getTask(sessionToken: String, taskId: String) async throws -> HermesTask { fatalError("not exercised") }
     func listTasks(sessionToken: String, status: HermesTaskStatus?) async throws -> [HermesTask] { fatalError("not exercised") }
     func followup(sessionToken: String, taskId: String, message: String) async throws -> HermesTask { fatalError("not exercised") }

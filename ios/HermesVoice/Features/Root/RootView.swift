@@ -15,6 +15,20 @@ struct RootView: View {
                     .padding(.bottom, 24)
             }
 
+#if DEBUG
+            VStack {
+                HStack {
+                    Spacer()
+                    Button("Reset client session") { store.resetClientSession() }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("reset-client-session")
+                }
+                Spacer()
+            }
+            .padding()
+#endif
+
             if store.needsBootstrapCredential {
                 VStack(spacing: 14) {
                     Text("Connect to Hermes")

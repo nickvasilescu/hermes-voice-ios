@@ -27,8 +27,12 @@ actor SSEClient {
         streamTask = Task {
             do {
                 let (bytes, response) = try await session.bytes(for: request)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                guard let http = response as? HTTPURLResponse else {
                     onDisconnect(BackendClientError.transport("SSE connect failed"))
+                    return
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    onDisconnect(BackendClientError.http(status: http.statusCode, code: nil, detail: nil))
                     return
                 }
 

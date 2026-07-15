@@ -6,9 +6,14 @@ struct HermesVoiceApp: App {
 
     @MainActor
     init() {
-        let backend = BackendClient(config: BridgeConfig(baseURL: Config.bridgeBaseURL))
+        let rawBackend = BackendClient(config: BridgeConfig(baseURL: Config.bridgeBaseURL))
         let sessionManager = ClientSessionManager(persistence: KeychainSessionStore())
         let bootstrapCredentialStore = BootstrapCredentialStore()
+        let backend = ReauthenticatingBackendClient(
+            base: rawBackend,
+            sessionManager: sessionManager,
+            bootstrapCredential: { await bootstrapCredentialStore.load() }
+        )
         let instructionsHolder = SessionInstructionsHolder()
         // WebRTC engine is wired via Stasel when available — see
         // Core/Transport/StaselWebRTCEngine.swift. Until the package is
@@ -18,7 +23,7 @@ struct HermesVoiceApp: App {
             backend: backend,
             sessionToken: {
                 try await sessionManager.ensureSession {
-                    try await backend.bootstrapSession(bootstrapCredential: await bootstrapCredentialStore.load())
+                    try await rawBackend.bootstrapSession(bootstrapCredential: await bootstrapCredentialStore.load())
                 }.sessionToken
             },
             instructions: { instructionsHolder.current() },

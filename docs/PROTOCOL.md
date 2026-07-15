@@ -339,9 +339,8 @@ t=60m      session A would have expired here — irrelevant, already retired
 
 What rotation does **not** disturb:
 - `hermesSessionId` — unchanged, so `GET /v1/tasks` and the SSE stream at
-  `/v1/events` keep working through rotation without so much as a
-  reconnect (SSE has its own independent reconnect/backoff, orthogonal to
-  Realtime rotation).
+  `/v1/events` keep working through an ordinary Realtime rotation without a
+  reconnect.
 - The task rail state in the iOS app — sourced from bridge, not from the
   Realtime session.
 
@@ -362,6 +361,16 @@ make-before-break shape with exponential backoff (`1s, 2s, 4s, 8s, capped at
 machine in `SessionReducer.swift`; the actual `RTCPeerConnection` calls are
 behind the `RealtimeTransport` protocol — see `ARCHITECTURE.md` for the
 concrete-vs-abstract boundary).
+
+The client-session bearer is a separate lifecycle. If a bridge restart or
+revocation makes a still-valid Keychain token unknown to the server, the
+iOS client treats the first protected-route `401` as recoverable: it clears
+that token, bootstraps exactly once with the operator credential, and retries
+the request exactly once. A bootstrap `401` or a second protected-route `401`
+is surfaced instead of looping, and the app asks for a corrected bootstrap
+credential. The Debug build also exposes **Reset client session**, which
+clears only the minted client token and reconnects; it does not erase the
+operator's bootstrap credential.
 
 ---
 

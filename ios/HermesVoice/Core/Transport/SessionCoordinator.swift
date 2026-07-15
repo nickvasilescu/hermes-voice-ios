@@ -65,8 +65,12 @@ final class SessionCoordinator: @unchecked Sendable {
     /// `Error`, so a bare `String` is illegal.
     struct ConnectError: Error, Equatable, CustomStringConvertible {
         let message: String
+        let requiresBootstrapCredential: Bool
         var description: String { message }
-        init(_ message: String) { self.message = message }
+        init(_ message: String, requiresBootstrapCredential: Bool = false) {
+            self.message = message
+            self.requiresBootstrapCredential = requiresBootstrapCredential
+        }
     }
 
     private let backend: BackendClientProtocol
@@ -90,6 +94,7 @@ final class SessionCoordinator: @unchecked Sendable {
     var onServerEvent: ((RealtimeServerEvent) -> Void)?
     var onCallEstablished: (() -> Void)?
     var onDisconnected: ((String?) -> Void)?
+    var onBootstrapCredentialRequired: (() -> Void)?
 
     init(
         backend: BackendClientProtocol,
@@ -166,7 +171,10 @@ final class SessionCoordinator: @unchecked Sendable {
             onCallEstablished?()
             return .success(())
         } catch {
-            return .failure(ConnectError(String(describing: error)))
+            return .failure(ConnectError(
+                String(describing: error),
+                requiresBootstrapCredential: Self.isUnauthorized(error)
+            ))
         }
     }
 
@@ -205,7 +213,15 @@ final class SessionCoordinator: @unchecked Sendable {
                 }
                 rotatingTransport = nil
                 rotatingGeneration = nil
-                scheduleRotationRetry(voice: voiceToUse)
+                if Self.isUnauthorized(error) {
+                    onBootstrapCredentialRequired?()
+                    // Credential failures need operator input. A timer-based
+                    // retry would just replay the same rejected credential.
+                    rotationTimer?.invalidate()
+                    rotationTimer = nil
+                } else {
+                    scheduleRotationRetry(voice: voiceToUse)
+                }
             }
         }
     }
@@ -330,5 +346,12 @@ final class SessionCoordinator: @unchecked Sendable {
         case .connected, .connecting:
             break
         }
+    }
+
+    nonisolated private static func isUnauthorized(_ error: Error) -> Bool {
+        guard case BackendClientError.http(status: 401, code: _, detail: _) = error else {
+            return false
+        }
+        return true
     }
 }

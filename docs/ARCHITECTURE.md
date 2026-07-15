@@ -141,13 +141,13 @@ not a chat transcript UI — see `docs/PRODUCT.md` for why.
 
 ## Known limitations
 
-- **No concrete WebRTC engine ships.** Voice will not connect until one is
-  wired into `WebRTCEngine`/`WebRTCRealtimeTransport`. Everything else in
-  the app (task rail, reducer, tool execution against a running bridge)
-  works independently of this.
-- **iOS is unverified.** No Swift toolchain was available while building
-  this repo. Tests are written; none have been run. Compile and run them
-  in Xcode before trusting any of it.
+- **WebRTC is an external binary dependency.** The app uses Stasel WebRTC
+  through `StaselWebRTCEngine`; package resolution, licensing, binary size,
+  physical-device audio behavior, and future upstream updates remain release
+  concerns rather than an abstract transport gap.
+- **Physical-device audio needs regression coverage.** The Swift test suite
+  runs on this Mac, but microphone/audio-route failures still require a real
+  iPhone acceptance pass.
 - **OpenAI Realtime response schema is best-effort.** `realtimeClient.ts`
   parses defensively but was written without a live call to verify the
   exact current `client_secrets` response shape for `gpt-realtime-2.1`.
@@ -155,10 +155,10 @@ not a chat transcript UI — see `docs/PRODUCT.md` for why.
   ephemeral sessions are independent; rotating seeds a short recap from
   bridge task-rail state, but verbatim turn-by-turn memory is not
   preserved. See `docs/PROTOCOL.md` §6.
-- **SSE has no dedicated reconnect/backoff loop.** `HermesVoiceStore`
-  subscribes once at `start()`; a dropped SSE connection is not
-  automatically retried in this MVP (Realtime rotation reconnect *is*
-  implemented — this is the separate bridge-events leg).
+- **SSE has no general reconnect/backoff loop.** An authentication `401`
+  performs one client-session recovery and resubscribe, but an unrelated
+  dropped SSE connection still waits for the next app `start()` (Realtime
+  reconnect is implemented separately).
 - **In-memory dev store only.** `TaskStore` is a `Map`; nothing survives a
   `bridge/` process restart. Fine for local dev/demo, not for production —
   see `docs/SECURITY.md`.

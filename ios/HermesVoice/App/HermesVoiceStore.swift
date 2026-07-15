@@ -46,6 +46,9 @@ final class HermesVoiceStore: ObservableObject {
         coordinator.onDisconnected = { [weak self] reason in
             Task { @MainActor in self?.dispatch(.transportDisconnected(reason: reason)) }
         }
+        coordinator.onBootstrapCredentialRequired = { [weak self] in
+            Task { @MainActor in self?.needsBootstrapCredential = true }
+        }
     }
 
     /// Idempotent: a second call while the first is still starting (or
@@ -73,6 +76,27 @@ final class HermesVoiceStore: ObservableObject {
         Task {
             await bootstrapCredentialStore.save(value)
             bootstrapCredentialInput = ""
+            needsBootstrapCredential = false
+            startTask = nil
+            start()
+        }
+    }
+
+    /// Debug/operator escape hatch for a bridge restart or deliberate token
+    /// revocation. Clears only the minted client session; the separately
+    /// stored bootstrap credential remains in Keychain.
+    func resetClientSession() {
+        startTask?.cancel()
+        startTask = Task { [weak self] in
+            guard let self else { return }
+            await coordinator.teardown()
+            await sseClient.disconnect()
+            await sessionManager.invalidate()
+            state = SessionState(
+                systemInstructions: state.systemInstructions,
+                toolDefinitions: state.toolDefinitions,
+                voice: state.voice
+            )
             needsBootstrapCredential = false
             startTask = nil
             start()
@@ -107,6 +131,9 @@ final class HermesVoiceStore: ObservableObject {
         case .success:
             break // .callEstablished arrives via the coordinator callback
         case let .failure(error):
+            if error.requiresBootstrapCredential {
+                needsBootstrapCredential = true
+            }
             dispatch(.callEstablishmentFailed(error.message))
         }
     }
@@ -125,6 +152,9 @@ final class HermesVoiceStore: ObservableObject {
                 dispatch(.taskUpdated(task))
             }
         } catch {
+            if Self.isUnauthorized(error) {
+                needsBootstrapCredential = true
+            }
             Log.error("could not hydrate tasks: \(error)")
         }
     }
@@ -170,11 +200,14 @@ final class HermesVoiceStore: ObservableObject {
             let outputJSON = try await ToolRegistry.execute(name: name, callId: callId, argumentsJSON: argumentsJSON, backend: backend, sessionToken: token)
             dispatch(.toolResultReady(callId: callId, outputJSON: outputJSON))
         } catch {
+            if Self.isUnauthorized(error) {
+                needsBootstrapCredential = true
+            }
             dispatch(.toolExecutionFailed(callId: callId, message: String(describing: error)))
         }
     }
 
-    private func subscribeToTaskEvents() {
+    private func subscribeToTaskEvents(retryUnauthorized: Bool = true) {
         Task {
             let token: String
             do {
@@ -194,8 +227,12 @@ final class HermesVoiceStore: ObservableObject {
                     guard let task = try? JSONDecoder().decode(HermesTask.self, from: data) else { return }
                     Task { @MainActor in self?.dispatch(.taskUpdated(task)) }
                 },
-                onDisconnect: { error in
+                onDisconnect: { [weak self] error in
                     if let error { Log.error("SSE disconnected: \(error)") }
+                    guard retryUnauthorized, let error, Self.isUnauthorized(error) else { return }
+                    Task { @MainActor in
+                        await self?.recoverSessionAndResubscribe()
+                    }
                     // A dedicated reconnect/backoff loop for the SSE leg
                     // (independent of Realtime rotation, per PROTOCOL.md §6)
                     // is intentionally not implemented in this MVP; the app
@@ -204,5 +241,30 @@ final class HermesVoiceStore: ObservableObject {
                 }
             )
         }
+    }
+
+    private func recoverSessionAndResubscribe() async {
+        do {
+            await sessionManager.invalidate()
+            let session = try await sessionManager.ensureSession { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.bootstrapSession()
+            }
+            dispatch(.hermesSessionAssigned(session.hermesSessionId))
+            subscribeToTaskEvents(retryUnauthorized: false)
+            await hydrateTasks()
+        } catch {
+            if Self.isUnauthorized(error) {
+                needsBootstrapCredential = true
+            }
+            Log.error("could not recover SSE client session: \(error)")
+        }
+    }
+
+    nonisolated private static func isUnauthorized(_ error: Error) -> Bool {
+        guard case BackendClientError.http(status: 401, code: _, detail: _) = error else {
+            return false
+        }
+        return true
     }
 }

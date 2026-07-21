@@ -41,7 +41,8 @@ test("ApiServerHermesProvider maps a simple run to completed", async () => {
     if (url.endsWith("/v1/runs") && init?.method === "POST") {
       const body = JSON.parse(String(init.body));
       assert.equal(body.input, "say hi");
-      assert.equal(body.session_id, "sess_1");
+      assert.equal(body.session_id, "ht_1");
+      assert.equal(new Headers(init.headers).get("X-Hermes-Session-Key"), "sess_1");
       return new Response(JSON.stringify({ run_id: runId, status: "started" }), { status: 202 });
     }
     if (url.endsWith(`/v1/runs/${runId}/events`)) {
@@ -66,6 +67,7 @@ test("ApiServerHermesProvider maps a simple run to completed", async () => {
   await provider.createTask({
     taskId: "task_1",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_1",
     instruction: "say hi",
   });
 
@@ -90,6 +92,8 @@ test("ApiServerHermesProvider queues follow-up until the current run completes",
       runCount += 1;
       const runId = `run_${runCount}`;
       const body = JSON.parse(String(init.body));
+      assert.equal(body.session_id, "ht_follow");
+      assert.equal(new Headers(init.headers).get("X-Hermes-Session-Key"), "sess_f");
       if (runCount === 1) {
         assert.equal(body.input, "first");
         assert.equal(body.conversation_history, undefined);
@@ -130,6 +134,7 @@ test("ApiServerHermesProvider queues follow-up until the current run completes",
   await provider.createTask({
     taskId: "task_follow",
     hermesSessionId: "sess_f",
+    hermesThreadId: "ht_follow",
     instruction: "first",
   });
 
@@ -197,6 +202,7 @@ test("ApiServerHermesProvider maps approval.request and resolveApproval", async 
   await provider.createTask({
     taskId: "task_appr",
     hermesSessionId: "sess_a",
+    hermesThreadId: "ht_approval",
     instruction: "do something gated",
   });
 
@@ -236,6 +242,7 @@ test("ApiServerHermesProvider fails the task when SSE closes without a terminal 
   await provider.createTask({
     taskId: "task_eof",
     hermesSessionId: "sess_eof",
+    hermesThreadId: "ht_eof",
     instruction: "long job",
   });
 
@@ -281,6 +288,7 @@ test("ApiServerHermesProvider cancel treats /stop 404 as already-gone", async ()
   await provider.createTask({
     taskId: "task_gone",
     hermesSessionId: "sess_g",
+    hermesThreadId: "ht_gone",
     instruction: "maybe already done",
   });
   await waitFor(events, (e) => e.type === "status");
@@ -328,6 +336,7 @@ test("ApiServerHermesProvider stops an orphaned run when cancel wins during star
   const createPromise = provider.createTask({
     taskId: "task_orphan",
     hermesSessionId: "sess_o",
+    hermesThreadId: "ht_orphan",
     instruction: "slow start",
   });
   // Let createTask reach startingRun + await on POST /v1/runs.
@@ -382,6 +391,7 @@ test("ApiServerHermesProvider fails the task if follow-up drain throws after run
   await provider.createTask({
     taskId: "task_drain_fail",
     hermesSessionId: "sess_df",
+    hermesThreadId: "ht_drain_fail",
     instruction: "first",
   });
   // Queue while first run is still open so afterRunSettled (not sendFollowup) drains it.
@@ -430,6 +440,7 @@ test("ApiServerHermesProvider cancelTask posts /stop and emits canceled", async 
   await provider.createTask({
     taskId: "task_stop",
     hermesSessionId: "sess_s",
+    hermesThreadId: "ht_stop",
     instruction: "long job",
   });
   await waitFor(events, (e) => e.type === "status");

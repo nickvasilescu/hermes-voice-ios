@@ -39,6 +39,7 @@ test("MockHermesProvider runs a normal task to completion", async () => {
   await provider.createTask({
     taskId: "task_1",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_1",
     instruction: "book a table for two",
   });
 
@@ -58,6 +59,7 @@ test("MockHermesProvider pauses for approval when instruction mentions approve",
   await provider.createTask({
     taskId: "task_2",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_2",
     instruction: "please approve a $40 refund",
   });
 
@@ -80,6 +82,7 @@ test("MockHermesProvider fails the task when an approval is rejected", async () 
   await provider.createTask({
     taskId: "task_3",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_3",
     instruction: "approve this please",
   });
   await until((e) => e.some((ev) => ev.type === "approval_required"));
@@ -102,6 +105,7 @@ test("MockHermesProvider rejects resolveApproval with a mismatched approvalId", 
   await provider.createTask({
     taskId: "task_4",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_4",
     instruction: "approve it",
   });
   await until((e) => e.some((ev) => ev.type === "approval_required"));
@@ -120,6 +124,7 @@ test("MockHermesProvider cancelTask stops further events", async () => {
   await provider.createTask({
     taskId: "task_5",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_5",
     instruction: "long running task",
   });
   await provider.cancelTask("task_5", "user changed their mind");
@@ -137,6 +142,7 @@ test("MockHermesProvider cancelTask on an already-terminal task throws", async (
   await provider.createTask({
     taskId: "task_6",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_6",
     instruction: "quick task",
   });
   await until((e) => e.some((ev) => ev.type === "completed"));
@@ -158,9 +164,9 @@ test("MockHermesProvider sendFollowup on unknown task throws task_not_found", as
 test("MockHermesProvider bounds its internal task records: oldest is evicted past maxEntries", async () => {
   const provider = new MockHermesProvider({ minDelayMs: 10_000, maxDelayMs: 10_000, maxEntries: 2 });
 
-  await provider.createTask({ taskId: "task_old", hermesSessionId: "sess_1", instruction: "a" });
-  await provider.createTask({ taskId: "task_mid", hermesSessionId: "sess_1", instruction: "b" });
-  await provider.createTask({ taskId: "task_new", hermesSessionId: "sess_1", instruction: "c" });
+  await provider.createTask({ taskId: "task_old", hermesSessionId: "sess_1", hermesThreadId: "ht_old", instruction: "a" });
+  await provider.createTask({ taskId: "task_mid", hermesSessionId: "sess_1", hermesThreadId: "ht_mid", instruction: "b" });
+  await provider.createTask({ taskId: "task_new", hermesSessionId: "sess_1", hermesThreadId: "ht_new", instruction: "c" });
 
   // task_old should have been evicted once the third task pushed the
   // internal store past maxEntries: 2.
@@ -177,7 +183,7 @@ test("MockHermesProvider proactively cleans up terminal tasks after terminalRete
   const { events, listener, until } = collector();
   provider.onEvent(listener);
 
-  await provider.createTask({ taskId: "task_done", hermesSessionId: "sess_1", instruction: "quick task" });
+  await provider.createTask({ taskId: "task_done", hermesSessionId: "sess_1", hermesThreadId: "ht_done", instruction: "quick task" });
   await until((e) => e.some((ev) => ev.type === "completed"));
 
   // Immediately after completion the record is still around — a
@@ -204,7 +210,7 @@ test("MockHermesProvider default terminal retention keeps a just-completed task_
   const { events, listener, until } = collector();
   provider.onEvent(listener);
 
-  await provider.createTask({ taskId: "task_immediate", hermesSessionId: "sess_1", instruction: "quick task" });
+  await provider.createTask({ taskId: "task_immediate", hermesSessionId: "sess_1", hermesThreadId: "ht_immediate", instruction: "quick task" });
   await until((e) => e.some((ev) => ev.type === "completed"));
   assert.ok(events.some((e) => e.type === "completed"));
 

@@ -48,16 +48,22 @@ test("a validly minted session token is accepted on protected routes", async () 
   }
 });
 
-test("the hermesSessionId used for task scoping is resolved from the token, not client-supplied", async () => {
+test("task ownership and Hermes thread ids are server-selected, not client-supplied", async () => {
   const server = await startAuthedTestServer();
   try {
     const createRes = await fetch(`${server.baseUrl}/v1/tasks`, {
       method: "POST",
       headers: server.authHeaders(),
-      body: JSON.stringify({ instruction: "x" }),
+      body: JSON.stringify({
+        instruction: "x",
+        hermesSessionId: "hs_attacker",
+        hermesThreadId: "ht_attacker",
+      }),
     });
-    const task = await readJson<{ hermesSessionId: string }>(createRes);
+    const task = await readJson<{ hermesSessionId: string; hermesThreadId: string }>(createRes);
     assert.equal(task.hermesSessionId, server.hermesSessionId);
+    assert.match(task.hermesThreadId, /^ht_[0-9a-f-]{36}$/i);
+    assert.notEqual(task.hermesThreadId, "ht_attacker");
   } finally {
     await server.close();
   }

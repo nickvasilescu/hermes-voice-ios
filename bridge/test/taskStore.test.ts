@@ -11,6 +11,7 @@ test("TaskStore.create assigns an id, defaults, and history entry, and reports c
 
   assert.equal(created, true);
   assert.match(task.id, /^task_/);
+  assert.match(task.hermesThreadId, /^ht_[0-9a-f-]{36}$/i);
   assert.equal(task.status, "queued");
   assert.equal(task.hermesSessionId, "sess_1");
   assert.equal(task.history.length, 1);
@@ -62,7 +63,19 @@ test("TaskStore idempotency: same clientRequestId returns the same task and crea
   assert.equal(first.created, true);
   assert.equal(second.created, false);
   assert.equal(first.task.id, second.task.id);
+  assert.equal(first.task.hermesThreadId, second.task.hermesThreadId);
+  assert.equal(first.task.clientRequestId, "req-1");
+  assert.equal(second.task.clientRequestId, "req-1");
   assert.equal(store.list("sess_1").length, 1);
+});
+
+test("TaskStore gives independent tasks in the same client session distinct Hermes threads", () => {
+  const store = new TaskStore();
+  const { task: first } = store.create({ hermesSessionId: "sess_1", instruction: "book dinner" });
+  const { task: second } = store.create({ hermesSessionId: "sess_1", instruction: "review a PR" });
+
+  assert.equal(first.hermesSessionId, second.hermesSessionId);
+  assert.notEqual(first.hermesThreadId, second.hermesThreadId);
 });
 
 test("TaskStore idempotency is scoped per hermesSessionId", () => {

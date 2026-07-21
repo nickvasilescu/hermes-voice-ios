@@ -7,7 +7,10 @@ import type { TaskError } from "../types.js";
  */
 export interface CreateTaskInput {
   taskId: string;
+  /** Stable client scope used for Hermes long-term memory across task threads. */
   hermesSessionId: string;
+  /** Hermes conversation scope. Follow-up runs for this task reuse it. */
+  hermesThreadId: string;
   instruction: string;
   context?: unknown;
 }

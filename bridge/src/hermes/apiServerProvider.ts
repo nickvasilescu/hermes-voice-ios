@@ -39,6 +39,7 @@ interface ConversationMessage {
 
 interface InternalTask {
   hermesSessionId: string;
+  hermesThreadId: string;
   instruction: string;
   context?: unknown;
   terminal: boolean;
@@ -111,6 +112,7 @@ export class ApiServerHermesProvider implements HermesProvider {
 
     const internal: InternalTask = {
       hermesSessionId: input.hermesSessionId,
+      hermesThreadId: input.hermesThreadId,
       instruction: input.instruction,
       context: input.context,
       terminal: false,
@@ -194,7 +196,7 @@ export class ApiServerHermesProvider implements HermesProvider {
     try {
       const body: Record<string, unknown> = {
         input,
-        session_id: internal.hermesSessionId,
+        session_id: internal.hermesThreadId,
       };
       if (conversationHistory.length > 0) {
         body.conversation_history = conversationHistory;

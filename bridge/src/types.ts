@@ -39,9 +39,13 @@ export interface TaskHistoryEntry {
 
 export interface Task {
   id: string;
+  /** Client-session ownership scope used by auth, task listing, and SSE. */
   hermesSessionId: string;
+  /** Hermes conversation scope for this coherent task and its follow-ups. */
+  hermesThreadId: string;
   status: TaskStatus;
   instruction: string;
+  clientRequestId?: string;
   summary?: string;
   progress?: TaskProgress;
   result?: unknown;

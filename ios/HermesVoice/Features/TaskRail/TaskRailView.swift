@@ -1,59 +1,145 @@
 import SwiftUI
 
-/// Horizontal rail of in-flight/recent Hermes tasks, secondary to the orb.
-/// Tapping a card is a stand-in for a detail sheet (not implemented in this
-/// MVP — see docs/ARCHITECTURE.md "Known limitations"). [IMPLEMENTED]
+/// Persistent task activity surface. It is intentionally visible even before
+/// the first task so delegation never feels like work disappeared into a
+/// hidden rail.
 struct TaskRailView: View {
     let viewModel: TaskRailViewModel
+    @State private var isExpanded = false
 
     var body: some View {
-        if viewModel.isEmpty {
-            EmptyView()
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(viewModel.tasks) { task in
-                        TaskCard(task: task)
+        VStack(spacing: 0) {
+            if viewModel.items.count > 2 {
+                Button {
+                    withAnimation(.snappy) { isExpanded.toggle() }
+                } label: {
+                    activityHeader
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "Collapse activity" : "Expand activity")
+            } else {
+                activityHeader
+            }
+
+            Divider().opacity(0.5)
+
+            if viewModel.items.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "waveform.badge.mic")
+                        .foregroundStyle(.secondary)
+                    Text("Tasks you delegate will appear here immediately.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(16)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(visibleItems) { item in
+                            TaskActivityRow(item: item)
+                            if item.id != visibleItems.last?.id { Divider().padding(.leading, 48) }
+                        }
                     }
                 }
-                .padding(.horizontal)
+                .frame(maxHeight: isExpanded ? 290 : 154)
             }
         }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var visibleItems: [TaskActivityItem] {
+        isExpanded ? viewModel.items : Array(viewModel.items.prefix(2))
+    }
+
+    private var activityHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "list.bullet.clipboard")
+                .foregroundStyle(.secondary)
+            Text("Activity")
+                .font(.headline)
+            if viewModel.activeCount > 0 {
+                Text("\(viewModel.activeCount)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.blue.opacity(0.22), in: Capsule())
+                    .foregroundStyle(.blue)
+            }
+            Spacer()
+            if viewModel.items.count > 2 {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(16)
     }
 }
 
-private struct TaskCard: View {
-    let task: HermesTask
+private struct TaskActivityRow: View {
+    let item: TaskActivityItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(task.instruction)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(2)
-                .foregroundStyle(.primary)
-
-            Text(task.status.displayLabel)
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(statusColor.opacity(0.18), in: Capsule())
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbolName)
+                .font(.body.weight(.semibold))
                 .foregroundStyle(statusColor)
+                .frame(width: 24, height: 24)
+                .symbolEffect(.pulse, options: .repeating, isActive: item.state == .sending || item.state == .running)
 
-            if let message = task.progress?.message {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.instruction)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(2)
+                    Spacer(minLength: 6)
+                    Text(item.state.displayLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                }
+
+                if let detail = item.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                if let percent = item.progressPercent {
+                    ProgressView(value: max(0, min(percent, 100)), total: 100)
+                        .tint(statusColor)
+                        .accessibilityLabel("\(Int(percent)) percent complete")
+                }
             }
         }
-        .padding(12)
-        .frame(width: 200, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.instruction), \(item.state.displayLabel)\(item.detail.map { ", \($0)" } ?? "")")
+    }
+
+    private var symbolName: String {
+        switch item.state {
+        case .sending: return "arrow.up.circle.fill"
+        case .queued: return "clock.fill"
+        case .running: return "gearshape.2.fill"
+        case .waitingApproval: return "exclamationmark.shield.fill"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.octagon.fill"
+        case .canceled: return "minus.circle.fill"
+        }
     }
 
     private var statusColor: Color {
-        switch task.status {
-        case .queued, .running: return .blue
+        switch item.state {
+        case .sending, .queued, .running: return .blue
         case .waitingApproval: return .orange
         case .completed: return .green
         case .failed: return .red
@@ -71,6 +157,9 @@ private struct TaskCard: View {
             result: nil, error: nil, pendingApproval: nil,
             createdAt: "", updatedAt: "", history: []
         ),
+    ], pendingDelegations: [
+        PendingDelegation(callId: "call_2", instruction: "Prepare tomorrow's briefing")
     ]))
-    .padding()
+    .padding(.vertical)
+    .background(Color.black)
 }

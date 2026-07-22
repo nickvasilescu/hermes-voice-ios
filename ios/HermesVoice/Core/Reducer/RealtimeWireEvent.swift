@@ -83,13 +83,40 @@ enum RealtimeClientEvent: Equatable, @unchecked Sendable {
     /// progress) so the model can narrate it. PROTOCOL.md product loop.
     case conversationMessage(role: String, text: String)
     case responseCreate
+    case responseCancel(responseId: String)
+    case outputAudioBufferClear
 
     func toJSONObject() -> [String: Any] {
         switch self {
         case let .sessionUpdate(instructions, tools, voice):
-            var session: [String: Any] = [
+            // Speakerphone playback can leak back into the microphone even
+            // when WebRTC's voice-processing audio unit is active. Keep
+            // natural barge-in, but require a stronger speech onset than
+            // OpenAI's 0.5 example and wait a little longer before deciding
+            // that the user finished a turn. See docs/PROTOCOL.md §3.6.
+            var audio: [String: Any] = [
+                "input": [
+                    "turn_detection": [
+                        "type": "server_vad",
+                        // A Swift Double literal here is unsafe: Foundation
+                        // serializes 0.7 as 0.69999999999999996, which exceeds
+                        // Realtime's 16-decimal validation limit. Preserve the
+                        // intended JSON number as an exact base-10 decimal.
+                        "threshold": NSDecimalNumber(string: "0.7"),
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 700,
+                        "create_response": true,
+                        "interrupt_response": true,
+                    ] as [String: Any],
+                ] as [String: Any],
+            ]
+            if let voice {
+                audio["output"] = ["voice": voice]
+            }
+            let session: [String: Any] = [
                 "type": "realtime",
                 "instructions": instructions,
+                "audio": audio,
                 "tools": tools.map { tool in
                     [
                         "type": "function",
@@ -99,9 +126,6 @@ enum RealtimeClientEvent: Equatable, @unchecked Sendable {
                     ] as [String: Any]
                 },
             ]
-            if let voice {
-                session["audio"] = ["output": ["voice": voice]]
-            }
             return ["type": "session.update", "session": session]
         case let .functionCallOutput(callId, outputJSON):
             return [
@@ -125,6 +149,10 @@ enum RealtimeClientEvent: Equatable, @unchecked Sendable {
             ]
         case .responseCreate:
             return ["type": "response.create"]
+        case let .responseCancel(responseId):
+            return ["type": "response.cancel", "response_id": responseId]
+        case .outputAudioBufferClear:
+            return ["type": "output_audio_buffer.clear"]
         }
     }
 

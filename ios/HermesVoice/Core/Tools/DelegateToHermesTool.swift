@@ -6,7 +6,7 @@ struct DelegateToHermesTool: HermesTool {
     var definition: RealtimeToolDefinition {
         RealtimeToolDefinition(
             name: name,
-            description: "Hand a durable task off to Hermes. Returns immediately with a task id; Hermes works asynchronously and reports progress/completion via task status updates that the app narrates back to you.",
+            description: "Start a new, independent durable objective in Hermes. Use this for unrelated work, not to add information or corrections to an existing task; use send_followup_to_hermes for those. Returns immediately with a task id while Hermes works asynchronously.",
             parametersJSON: [
                 "type": "object",
                 "properties": [
@@ -18,7 +18,7 @@ struct DelegateToHermesTool: HermesTool {
         )
     }
 
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         let args = try decodeArguments(argumentsJSON)
         guard let instruction = args["instruction"] as? String, !instruction.isEmpty else {
             throw ToolError.invalidArguments("delegate_to_hermes requires a non-empty instruction")
@@ -33,6 +33,6 @@ struct DelegateToHermesTool: HermesTool {
         // (SessionReducer also dedupes by call_id before this ever runs —
         // this is defense in depth, not the only guard.)
         let task = try await backend.createTask(sessionToken: sessionToken, instruction: instruction, context: context, clientRequestId: callId)
-        return encodeSummary(task)
+        return encodeResult(task)
     }
 }

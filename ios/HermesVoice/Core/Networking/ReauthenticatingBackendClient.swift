@@ -104,8 +104,9 @@ actor ReauthenticatingBackendClient: BackendClientProtocol {
         // Another request may already have recovered while this request was
         // waiting for its 401 response. Reuse that newer token instead of
         // invalidating it and minting a second client session.
-        if let currentToken = await sessionManager.currentToken(), currentToken != rejectedToken {
-            return currentToken
+        let snapshot = await sessionManager.recoverySnapshot()
+        if let current = snapshot.current, current.sessionToken != rejectedToken {
+            return current.sessionToken
         }
         if let inFlightRecovery {
             return try await inFlightRecovery.value.sessionToken
@@ -114,9 +115,32 @@ actor ReauthenticatingBackendClient: BackendClientProtocol {
         let base = self.base
         let manager = sessionManager
         let credential = bootstrapCredential
+        let observedGeneration = snapshot.generation
         let task = Task<StoredClientSession, Error> {
-            await manager.invalidate()
-            return try await manager.ensureSession {
+            guard await manager.sessionGeneration() == observedGeneration else {
+                if let current = await manager.currentSession(), current.sessionToken != rejectedToken {
+                    return current
+                }
+                throw CancellationError()
+            }
+            // This is atomic inside ClientSessionManager. If another REST or
+            // SSE path already replaced `rejectedToken`, its fresh session is
+            // deliberately left intact and `ensureSession` reuses it.
+            let didInvalidate = await manager.invalidate(ifCurrentTokenMatches: rejectedToken)
+            if !didInvalidate,
+               let current = await manager.currentSession(),
+               current.sessionToken != rejectedToken {
+                return current
+            }
+            let recoveryGeneration = await manager.sessionGeneration()
+            let expectedRecoveryGeneration = observedGeneration &+ (didInvalidate ? 1 : 0)
+            guard recoveryGeneration == expectedRecoveryGeneration else {
+                if let current = await manager.currentSession(), current.sessionToken != rejectedToken {
+                    return current
+                }
+                throw CancellationError()
+            }
+            return try await manager.ensureSession(expectedGeneration: recoveryGeneration) {
                 try await base.bootstrapSession(bootstrapCredential: await credential())
             }
         }

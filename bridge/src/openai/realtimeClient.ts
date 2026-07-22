@@ -21,17 +21,14 @@ export class RealtimeUpstreamError extends Error {
 
 /**
  * Mints an OpenAI Realtime ephemeral client credential. [IMPLEMENTED] as a
- * real call against the documented `client_secrets` endpoint shape known at
- * the time this was written; OpenAI's exact response schema for
- * gpt-realtime-2.1 should be re-verified against current OpenAI docs before
- * shipping, since this repo was built without live network access to
- * OpenAI. Parsing below is deliberately defensive (tolerates a couple of
- * plausible response shapes) rather than assuming one exact schema.
+ * real call against the documented `client_secrets` endpoint. Parsing remains
+ * deliberately defensive because upstream response fields can evolve.
  */
 export async function mintRealtimeSession(
   config: Config,
   fetchImpl: typeof fetch,
-  voice: string | undefined
+  voice: string | undefined,
+  safetyIdentifier: string
 ): Promise<RealtimeSessionResult> {
   if (!config.openaiApiKey) {
     throw new Error("openai_api_key_missing");
@@ -52,6 +49,7 @@ export async function mintRealtimeSession(
       headers: {
         "content-type": "application/json",
         Authorization: `Bearer ${config.openaiApiKey}`,
+        "OpenAI-Safety-Identifier": safetyIdentifier,
       },
       body: JSON.stringify(requestBody),
     });

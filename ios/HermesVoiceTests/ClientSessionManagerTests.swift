@@ -7,10 +7,10 @@ final class ClientSessionManagerTests: XCTestCase {
     func testEnsureSessionBootstrapsOnceAndReusesTheResult() async throws {
         let persistence = InMemorySessionPersistence()
         let manager = ClientSessionManager(persistence: persistence)
-        var bootstrapCallCount = 0
+        let bootstrapCalls = CallCounter()
 
         let bootstrap: @Sendable () async throws -> MintedClientSession = {
-            bootstrapCallCount += 1
+            await bootstrapCalls.increment()
             return MintedClientSession(sessionToken: "st_1", hermesSessionId: "hs_1", expiresAt: farFutureISO8601())
         }
 
@@ -19,6 +19,7 @@ final class ClientSessionManagerTests: XCTestCase {
 
         XCTAssertEqual(first.sessionToken, "st_1")
         XCTAssertEqual(second.sessionToken, "st_1")
+        let bootstrapCallCount = await bootstrapCalls.value
         XCTAssertEqual(bootstrapCallCount, 1, "a still-valid session must not trigger a second bootstrap call")
     }
 
@@ -43,14 +44,15 @@ final class ClientSessionManagerTests: XCTestCase {
 
         // Simulates a fresh app launch: a new manager, same underlying store.
         let second = ClientSessionManager(persistence: persistence)
-        var bootstrapCalled = false
+        let bootstrapCalled = AsyncFlag()
         let restored = try await second.ensureSession {
-            bootstrapCalled = true
+            await bootstrapCalled.set()
             return MintedClientSession(sessionToken: "st_should_not_be_used", hermesSessionId: "hs_should_not_be_used", expiresAt: farFutureISO8601())
         }
 
         XCTAssertEqual(restored.sessionToken, "st_1")
-        XCTAssertFalse(bootstrapCalled, "a still-valid persisted session must be reused instead of re-bootstrapping")
+        let didBootstrap = await bootstrapCalled.value
+        XCTAssertFalse(didBootstrap, "a still-valid persisted session must be reused instead of re-bootstrapping")
     }
 
     func testEnsureSessionReBootstrapsAnExpiredPersistedSession() async throws {
@@ -102,6 +104,58 @@ final class ClientSessionManagerTests: XCTestCase {
         XCTAssertNil(token)
         XCTAssertNil(stored)
     }
+
+    func testInvalidateCancelsInFlightBootstrapAndRejectsLateNonCooperativeResult() async throws {
+        let persistence = InMemorySessionPersistence()
+        let manager = ClientSessionManager(persistence: persistence)
+        let gate = BootstrapGate()
+
+        let pending = Task {
+            try await manager.ensureSession {
+                // Deliberately does not inspect Task cancellation. The manager
+                // generation must still reject this late completion.
+                await gate.mint()
+            }
+        }
+        await gate.waitUntilStarted()
+
+        await manager.invalidate()
+        await gate.resolve(
+            MintedClientSession(sessionToken: "st_stale", hermesSessionId: "hs_stale", expiresAt: farFutureISO8601())
+        )
+
+        do {
+            _ = try await pending.value
+            XCTFail("a pre-reset bootstrap must not survive the reset boundary")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let currentToken = await manager.currentToken()
+        let persisted = await persistence.load()
+        XCTAssertNil(currentToken)
+        XCTAssertNil(persisted, "a canceled bootstrap must not write stale Keychain state")
+    }
+
+    func testConditionalInvalidationPreservesSessionAlreadyRecoveredByAnotherPath() async throws {
+        let persistence = InMemorySessionPersistence()
+        let manager = ClientSessionManager(persistence: persistence)
+        _ = try await manager.ensureSession {
+            MintedClientSession(sessionToken: "st_old", hermesSessionId: "hs_old", expiresAt: farFutureISO8601())
+        }
+        let invalidatedOld = await manager.invalidate(ifCurrentTokenMatches: "st_old")
+        XCTAssertTrue(invalidatedOld)
+        _ = try await manager.ensureSession {
+            MintedClientSession(sessionToken: "st_fresh", hermesSessionId: "hs_fresh", expiresAt: farFutureISO8601())
+        }
+
+        let didInvalidate = await manager.invalidate(ifCurrentTokenMatches: "st_old")
+
+        XCTAssertFalse(didInvalidate)
+        let currentToken = await manager.currentToken()
+        let persistedToken = await persistence.load()?.sessionToken
+        XCTAssertEqual(currentToken, "st_fresh")
+        XCTAssertEqual(persistedToken, "st_fresh")
+    }
 }
 
 private func farFutureISO8601() -> String {
@@ -113,6 +167,30 @@ private func farFutureISO8601() -> String {
 private actor CallCounter {
     private(set) var value = 0
     func increment() { value += 1 }
+}
+
+private actor AsyncFlag {
+    private(set) var value = false
+    func set() { value = true }
+}
+
+private actor BootstrapGate {
+    private var started = false
+    private var continuation: CheckedContinuation<MintedClientSession, Never>?
+
+    func mint() async -> MintedClientSession {
+        started = true
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        while !started { await Task.yield() }
+    }
+
+    func resolve(_ session: MintedClientSession) {
+        continuation?.resume(returning: session)
+        continuation = nil
+    }
 }
 
 private actor InMemorySessionPersistence: ClientSessionPersisting {

@@ -53,22 +53,35 @@ default provider in tests and when Hermes API env vars are unset.
 automatically when both are set; otherwise the mock is used. See
 `docs/PROTOCOL.md` §5 and `.env.example`.
 
+### Client scope is not conversation scope
+
+The historical `hermesSessionId` name is retained on the wire for backward
+compatibility, but it now has one job: identify the authenticated client's
+task/SSE ownership scope. `TaskStore` mints a separate `hermesThreadId` for
+every new durable task. `ApiServerHermesProvider` sends that task thread as
+Hermes' `session_id` and reuses it only for follow-up runs on the same task.
+
+This avoids both bad extremes: every utterance becoming context-free and every
+unrelated job accumulating in one permanent Hermes conversation. A follow-up,
+approval, or correction stays attached to its task; an independent delegation
+starts with clean Hermes context. Cross-task context must be passed explicitly
+through task input/context rather than leaking implicitly through a shared
+session.
+
 **OpenAI ephemeral session minting is a real network call** to
 `https://api.openai.com/v1/realtime/client_secrets` with a real request
 shape (see `docs/PROTOCOL.md` §4). Its response parsing is deliberately
-defensive rather than assuming one exact schema, because this repo was
-built without live network access to OpenAI to verify the current
-`gpt-realtime-2.1` response shape byte-for-byte — re-verify against current
-OpenAI docs before depending on it in production.
+defensive rather than assuming one exact schema. The client-secret request
+also sends the opaque server-owned client scope as
+`OpenAI-Safety-Identifier`, following current Realtime guidance without
+exposing user PII.
 
-## iOS (`ios/HermesVoice`) — source written, not compiled here
+## iOS (`ios/HermesVoice`) — [IMPLEMENTED and simulator-tested]
 
-This repo was built in a Linux environment with no Xcode and no Swift
-toolchain (`swift --version` fails). Every Swift file here was written and
-reviewed for correctness by hand, but **none of it has been compiled,
-typechecked by `swiftc`, or run** in this repo's history. Treat it as a
-careful first draft to open in Xcode, not as verified-working code. See
-`CONTRIBUTING.md` for how to actually build/test it.
+The generated Xcode project resolves Stasel WebRTC and the app plus unit-test
+target build on macOS. `make ios-test` regenerates the project and runs the
+suite on an installed iPhone simulator. Physical-device microphone and audio
+routing remain an acceptance-test concern.
 
 ### Core/Reducer — pure state machine [IMPLEMENTED]
 
@@ -92,27 +105,16 @@ side effects across two live network objects). Reasonable engineers can
 disagree about exactly where this line should sit; the point is that it
 *is* a deliberate line, not an oversight.
 
-### Core/Transport — the WebRTC boundary [SCAFFOLDED at the binary level]
+### Core/Transport — the WebRTC boundary [IMPLEMENTED]
 
 `RealtimeTransport` is the protocol `SessionCoordinator` codes against.
-`WebRTCRealtimeTransport` is the one concrete implementation, and it is
-real up to a specific point: it does the actual HTTPS SDP offer/answer
-exchange against OpenAI's Realtime WebRTC endpoint (real request shape,
-real headers, real error handling), and it translates data-channel bytes
-to/from `RealtimeServerEvent`/`RealtimeClientEvent`. What it does *not* do
-is create an actual `RTCPeerConnection` — that's behind a narrow
-`WebRTCEngine` protocol with zero shipped implementations.
-
-This is a deliberate stop, not a gap someone forgot: adding a real engine
-means vendoring a WebRTC binary (e.g.
-[stasel/WebRTC](https://github.com/stasel/WebRTC), an unofficial build of
-Google's libwebrtc — there is no first-party Apple WebRTC framework). That
-decision has real consequences — ~30-50MB added to app size, a license to
-review, a binary this repo can't audit from a sandboxed Linux environment
-without network access — so `CLAUDE.md` explicitly asks a human to make it
-rather than have an agent silently pick one. `HermesVoiceApp.swift`
-constructs the transport with `engine: nil`, so this fails loudly
-(`.noEngineConfigured`) instead of pretending to work.
+`WebRTCRealtimeTransport` does the HTTPS SDP offer/answer exchange and
+translates data-channel bytes to/from `RealtimeServerEvent` and
+`RealtimeClientEvent`. It creates the peer connection, local audio track, and
+`oai-events` data channel through `StaselWebRTCEngine`. The narrow engine
+protocol keeps the unofficial binary dependency replaceable and lets the
+coordinator preserve microphone state across reconnects and make-before-break
+rotations.
 
 ### Core/Tools — the five tools [IMPLEMENTED]
 
@@ -129,15 +131,23 @@ never spawns a duplicate task.
 
 `BackendClient` is a plain `URLSession`-based REST client (testable via
 `URLProtocol` stubbing, see `BackendClientTests.swift`) and `SSEClient` is
-a minimal Server-Sent-Events reader over `URLSession.bytes(for:)`. Neither
-depends on the reducer or transport layer.
+a minimal Server-Sent-Events reader over `URLSession.bytes(for:)`. Its
+line-stream opener is injectable, so HTTP status, framing, EOF, transport
+failure, replacement, and cancellation are deterministic unit-test inputs.
+The Store owns SSE policy: capped exponential reconnect backoff plus exactly
+one `401` client-session recovery before prompting for the bootstrap
+credential. Neither networking client depends on the reducer or transport
+layer.
 
-### Features — SwiftUI [IMPLEMENTED as source]
+### Features — SwiftUI [IMPLEMENTED]
 
-One ambient orb (`AmbientOrbView`) as the primary surface, colored/animated
-by `ConversationPhase`, plus a secondary horizontal task rail
-(`TaskRailView`) sourced straight from `SessionState.tasks`. Deliberately
-not a chat transcript UI — see `docs/PRODUCT.md` for why.
+One ambient orb (`AmbientOrbView`) remains the primary surface. A control bar
+offers immediate response Stop plus persistent voice Pause/Resume; pause
+disables microphone and narration without stopping Hermes work. A persistent,
+expandable activity surface combines optimistic delegations with authoritative
+REST/SSE task state. `clientRequestId` correlation replaces each “Sending…”
+row with its real task without matching on human-readable text. This remains
+deliberately not a chat transcript UI — see `docs/PRODUCT.md` for why.
 
 ## Known limitations
 
@@ -148,17 +158,13 @@ not a chat transcript UI — see `docs/PRODUCT.md` for why.
 - **Physical-device audio needs regression coverage.** The Swift test suite
   runs on this Mac, but microphone/audio-route failures still require a real
   iPhone acceptance pass.
-- **OpenAI Realtime response schema is best-effort.** `realtimeClient.ts`
-  parses defensively but was written without a live call to verify the
-  exact current `client_secrets` response shape for `gpt-realtime-2.1`.
+- **OpenAI Realtime response parsing is intentionally defensive.**
+  `realtimeClient.ts` validates the credential, expiry, and session id while
+  accepting documented top-level and nested client-secret shapes.
 - **Realtime conversational memory does not survive rotation.** OpenAI
   ephemeral sessions are independent; rotating seeds a short recap from
   bridge task-rail state, but verbatim turn-by-turn memory is not
   preserved. See `docs/PROTOCOL.md` §6.
-- **SSE has no general reconnect/backoff loop.** An authentication `401`
-  performs one client-session recovery and resubscribe, but an unrelated
-  dropped SSE connection still waits for the next app `start()` (Realtime
-  reconnect is implemented separately).
 - **In-memory dev store only.** `TaskStore` is a `Map`; nothing survives a
   `bridge/` process restart. Fine for local dev/demo, not for production —
   see `docs/SECURITY.md`.

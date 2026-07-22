@@ -8,9 +8,8 @@ document. If code and this document disagree, that is a bug — in either the
 code or the doc.
 
 Status legend used throughout: **[IMPLEMENTED]** — real, tested code in this
-repo. **[SCAFFOLDED]** — types/interfaces/UI exist, but the concrete
-integration (a real Hermes backend, a real WebRTC binary) is intentionally
-out of scope for this MVP. **[MOCKED]** — a fake-but-honest local
+repo. **[SCAFFOLDED]** — types/interfaces/UI exist, but a production concrete
+integration is intentionally out of scope. **[MOCKED]** — a fake-but-honest local
 implementation stands in (e.g. `MockHermesProvider`).
 
 ---
@@ -46,8 +45,9 @@ implementation stands in (e.g. `MockHermesProvider`).
 - **Hermes owns**: durable task execution, memory, and side-effecting tools
   (email, calendars, code, whatever the deployment wires up). Hermes tasks
   can outlive a single Realtime WebRTC session, an app backgrounding, or a
-  phone restart, because they are keyed by `hermesSessionId`, not by the
-  ephemeral OpenAI `session_id`.
+  phone restart. Each independent task has its own `hermesThreadId`; its
+  follow-up runs reuse that thread instead of sharing implicit context with
+  unrelated tasks.
 - **bridge/ owns**: the narrow waist between the two. It never proxies audio;
   it mints short-lived OpenAI credentials, and it exposes a small REST+SSE
   surface for task lifecycle so the iOS app doesn't have to talk to Hermes'
@@ -59,10 +59,11 @@ implementation stands in (e.g. `MockHermesProvider`).
 
 | Id | Owner | Lifetime | Purpose |
 |---|---|---|---|
-| `hermesSessionId` | bridge, generated when `POST /v1/session` mints a client session | Client-session TTL; survives Realtime rotation and app restarts while the Keychain token remains valid | Server-side scope for tasks and SSE. The client cannot choose or override it. |
+| `hermesSessionId` | bridge, generated when `POST /v1/session` mints a client session | Client-session TTL; survives Realtime rotation and app restarts while the Keychain token remains valid | Backward-compatible name for the client ownership scope used by auth, task listing, idempotency, and SSE. It is not a Hermes conversation ID. The client cannot choose or override it. |
 | `sessionToken` | bridge, returned once by `POST /v1/session`; only its SHA-256 hash is retained server-side | Client-session TTL | Authenticates every protected request and resolves the bound `hermesSessionId` server-side. Stored only in iOS Keychain. |
 | OpenAI Realtime `session_id` | OpenAI, minted by `POST /v1/realtime/session` | ≤ 60 minutes (this system rotates at 55 min, see §6) | Scopes the WebRTC/voice connection only. |
 | `taskId` | bridge, format `task_<uuid v4>` | Until the client stops polling/listening or the dev store is restarted | Identifies one Hermes job. |
+| `hermesThreadId` | bridge, format `ht_<uuid v4>`, generated with a new task | Same as the task | Scopes the Hermes conversation for one coherent objective. The initial run and follow-up runs reuse it; independent tasks receive different values. |
 | `approvalId` | bridge/Hermes provider, format `appr_<uuid v4>` | Until resolved | Identifies one pending approval gate on a task. |
 | `clientRequestId` | iOS app, caller-chosen string | One create call | Idempotency key for `delegate_to_hermes`, so a Realtime tool-call retry (e.g. after a flaky network blip) doesn't spawn a duplicate task. |
 
@@ -165,6 +166,32 @@ All five map 1:1 onto `ios/HermesVoice/Core/Tools/*` handlers and
 `bridge/src/http/routes/tasks.ts`. The Realtime function-call `name` is the JSON
 key used for dispatch in `ToolRegistry.swift`.
 
+### 3.6 Voice control events
+
+Voice control is orthogonal to Hermes task execution:
+
+- **Stop current response:** the app sends `response.cancel` with the active
+  `response_id`, immediately followed by `output_audio_buffer.clear`. This
+  stops generation and clears audio already buffered on the WebRTC client. It
+  does not cancel any Hermes task.
+- **Pause voice:** the app disables its local WebRTC microphone track and uses
+  the same cancel/clear sequence for any active response. REST tool calls, SSE,
+  and Hermes tasks keep running. Function-call outputs still enter the
+  Realtime conversation, but the app defers `response.create` and task-update
+  narration while paused.
+- **Resume voice:** the app enables the microphone track. If results or task
+  updates accumulated while paused, it injects one bounded recap and sends one
+  `response.create`; otherwise it simply returns to listening.
+
+Every `session.update` explicitly enables `server_vad` with threshold `0.7`,
+`300 ms` of prefix padding, and `700 ms` of end-of-turn silence. Automatic
+response creation and interruption remain enabled, so a real user can still
+barge in. The higher onset threshold reduces false `speech_started` events from
+speaker leakage; the longer silence window makes short mid-sentence pauses less
+likely to end the user's turn. Device logs record the active audio category,
+mode, input/output route, and any `speech_started` received while a response is
+active so those two failure modes can be distinguished on hardware.
+
 ---
 
 ## 4. Bridge REST API — `[IMPLEMENTED]`
@@ -218,6 +245,11 @@ never leaves the server. Errors: `500 { error: "openai_api_key_missing" }` if
 unconfigured (unless `BRIDGE_MOCK_OPENAI=1`, dev-only — see below), `502 {
 error: "upstream_error", detail }` if OpenAI's API call fails.
 
+The bridge sends the opaque, server-owned `hermesSessionId` as
+`OpenAI-Safety-Identifier` on the client-secret request. It contains no PII and
+is stable for that client session. A production identity layer should replace
+this with a stable, privacy-preserving per-user identifier.
+
 Dev fallback: with `BRIDGE_MOCK_OPENAI=1` and no `OPENAI_API_KEY`, this
 route returns a clearly-fake credential (`clientSecret.value` prefixed
 `mock_ek_`) so the rest of the stack is exercisable without a real OpenAI
@@ -227,7 +259,11 @@ bootstrap check script and `SECURITY.md` call this out.
 ### `POST /v1/tasks`
 Body: `{ "instruction": string, "context"?: object, "clientRequestId"?: string }`
 `201 Task` (or `200 Task` if `clientRequestId` was already seen for this
-`hermesSessionId` — idempotent replay, not a duplicate task).
+`hermesSessionId` — idempotent replay, not a duplicate task). The returned
+`Task.clientRequestId` echoes the supplied key so clients can reconcile an
+optimistic activity row with either this REST response or `task.created` SSE.
+For a genuinely new task, the bridge also generates a fresh
+`Task.hermesThreadId`; clients cannot supply or override it.
 
 ### `GET /v1/tasks`
 Query `?status=` optional filter. `200 { "tasks": Task[] }` — all tasks for
@@ -270,9 +306,11 @@ type TaskStatus = "queued" | "running" | "waiting_approval" | "completed" | "fai
 
 interface Task {
   id: string;                 // task_<uuid>
-  hermesSessionId: string;
+  hermesSessionId: string;    // client ownership/auth/SSE scope (legacy name)
+  hermesThreadId: string;     // ht_<uuid>; Hermes conversation for this task and its follow-ups
   status: TaskStatus;
   instruction: string;
+  clientRequestId?: string;   // echoes the create idempotency key so optimistic client UI can reconcile with REST/SSE
   summary?: string;           // short human-readable current-state summary, for narration
   progress?: { percent?: number; message?: string };
   result?: unknown;
@@ -293,7 +331,7 @@ plugs into:
 
 ```ts
 interface HermesProvider {
-  createTask(input: { taskId: string; hermesSessionId: string; instruction: string; context?: unknown }): Promise<void>;
+  createTask(input: { taskId: string; hermesThreadId: string; instruction: string; context?: unknown }): Promise<void>;
   sendFollowup(taskId: string, message: string): Promise<void>;
   cancelTask(taskId: string, reason?: string): Promise<void>;
   resolveApproval(taskId: string, approvalId: string, decision: "approve" | "reject", note?: string): Promise<void>;
@@ -314,10 +352,12 @@ Hermes API Server (`POST /v1/runs`, SSE `/v1/runs/{id}/events`, `/stop`,
 `/approval`). Enable it by setting both `HERMES_API_BASE_URL` and
 `HERMES_API_KEY` (see `.env.example`). The bridge keeps its own `task_*`
 ids and maps them to Hermes `run_*` ids; follow-ups that arrive mid-run are
-queued and drained as successive runs on the same `session_id`.
+queued and drained as successive runs on the task's `hermesThreadId`, sent to
+Hermes as `session_id`. Independent tasks never share that value, even when
+they belong to the same authenticated client session.
 ---
 
-## 6. Session lifecycle & rotation — `[IMPLEMENTED on the reducer/coordinator level, SCAFFOLDED at the WebRTC binary level]`
+## 6. Session lifecycle & rotation — `[IMPLEMENTED]`
 
 OpenAI Realtime sessions are time-boxed. This system treats 60 minutes as a
 hard ceiling and rotates proactively at **55 minutes**, well before
@@ -341,6 +381,8 @@ What rotation does **not** disturb:
 - `hermesSessionId` — unchanged, so `GET /v1/tasks` and the SSE stream at
   `/v1/events` keep working through an ordinary Realtime rotation without a
   reconnect.
+- Each active task's `hermesThreadId` — follow-up runs remain attached to the
+  same Hermes context across Realtime rotation.
 - The task rail state in the iOS app — sourced from bridge, not from the
   Realtime session.
 
@@ -355,12 +397,11 @@ the thread back up — but verbatim turn-by-turn memory of the pre-rotation
 conversation is not preserved. See `docs/ARCHITECTURE.md` §"Known
 limitations" for the full list.
 
-Reconnection (network loss, not rotation) follows the same
-make-before-break shape with exponential backoff (`1s, 2s, 4s, 8s, capped at
-30s`), implemented in `SessionCoordinator` (`[IMPLEMENTED]` as a pure state
-machine in `SessionReducer.swift`; the actual `RTCPeerConnection` calls are
-behind the `RealtimeTransport` protocol — see `ARCHITECTURE.md` for the
-concrete-vs-abstract boundary).
+Reconnection (network loss, not rotation) follows the same make-before-break
+shape with exponential backoff (`1s, 2s, 4s, 8s, capped at 30s`). The pure
+decision logic lives in `SessionReducer`; `SessionCoordinator` sequences the
+side effects and `StaselWebRTCEngine` performs the concrete peer-connection
+operations behind `RealtimeTransport`.
 
 The client-session bearer is a separate lifecycle. If a bridge restart or
 revocation makes a still-valid Keychain token unknown to the server, the

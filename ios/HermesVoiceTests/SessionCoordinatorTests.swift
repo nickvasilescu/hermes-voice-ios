@@ -28,6 +28,20 @@ final class SessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(receivedEvents, [.responseAudioTranscriptDelta(text: "hello")])
     }
 
+    func testPausedMicrophoneStateSurvivesRotation() async throws {
+        let factory = FakeTransportFactory()
+        let coordinator = makeCoordinator(factory: factory)
+        coordinator.setMicrophoneEnabled(false)
+
+        _ = await coordinator.start(voice: nil)
+        let original = try XCTUnwrap(factory.transports.first)
+        XCTAssertEqual(original.microphoneEnabledValues.last, false)
+
+        await coordinator.rotate(voice: nil)
+        let replacement = try XCTUnwrap(factory.transports.last)
+        XCTAssertEqual(replacement.microphoneEnabledValues.last, false)
+    }
+
     func testFailedHandshakeReturnsFailureAndFiresNoEstablishedCallback() async throws {
         let factory = FakeTransportFactory()
         factory.nextShouldFailHandshake = true
@@ -228,6 +242,7 @@ private final class FakeRealtimeTransport: RealtimeTransport, @unchecked Sendabl
 
     private(set) var connectCallCount = 0
     private(set) var sentEvents: [RealtimeClientEvent] = []
+    private(set) var microphoneEnabledValues: [Bool] = []
     private(set) var didDisconnect = false
     private let shouldFailHandshake: Bool
 
@@ -249,6 +264,10 @@ private final class FakeRealtimeTransport: RealtimeTransport, @unchecked Sendabl
         if case .sessionUpdate = event, !shouldFailHandshake {
             onServerEvent?(.sessionUpdated)
         }
+    }
+
+    func setMicrophoneEnabled(_ enabled: Bool) {
+        microphoneEnabledValues.append(enabled)
     }
 
     func disconnect() async {

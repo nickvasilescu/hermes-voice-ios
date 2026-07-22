@@ -2,7 +2,7 @@ import Foundation
 
 /// The complete, closed set of five tools exposed to Realtime. Do not add a
 /// sixth here as a convenience — extend one of the five or push the
-/// capability into Hermes itself (see CLAUDE.md "Non-negotiables").
+/// capability into Hermes itself (see AGENTS.md "Non-negotiable invariants").
 /// [IMPLEMENTED]
 enum ToolRegistry {
     static let allTools: [HermesTool] = [
@@ -26,11 +26,11 @@ enum ToolRegistry {
     /// `hermesSessionId` is never passed here because it is never a
     /// model-visible parameter — it's resolved server-side from
     /// `sessionToken`, which itself comes from `ClientSessionManager` /
-    /// app state, never from Realtime function arguments. See CLAUDE.md
+    /// app state, never from Realtime function arguments. See AGENTS.md
     /// "Non-negotiables". Duplicate `call_id` delivery is guarded upstream
     /// by `SessionReducer` (see its `seenCallIds` handling) — this function
     /// assumes it is only ever invoked once per `call_id`.
-    static func execute(name: String, callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    static func execute(name: String, callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         guard let tool = tool(named: name) else {
             throw ToolError.invalidArguments("unknown tool: \(name)")
         }

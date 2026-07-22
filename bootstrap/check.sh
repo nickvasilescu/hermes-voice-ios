@@ -3,8 +3,8 @@
 #   - Node >= 22
 #   - bridge/ typechecks and its test suite passes
 #   - no .env file (or other obvious secret) is tracked by git
-#   - a friendly, non-fatal note about iOS tooling (Xcode/XcodeGen), since
-#     this environment may not have it and that's fine here
+#   - public-repository configuration and documentation links are safe
+#   - a friendly, non-fatal note about iOS tooling
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -28,10 +28,25 @@ if git ls-files --error-unmatch bridge/.env >/dev/null 2>&1; then
 fi
 ok "no tracked .env file"
 
+for forbidden in ios/HermesVoice/Config/Local.xcconfig scripts/dewey; do
+  if git ls-files "$forbidden" | grep -q .; then
+    fail "$forbidden contains operator-local material but is tracked by git"
+  fi
+done
+ok "no tracked local signing or operator deployment material"
+
 if git grep -nE '(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' -- . ':!package-lock.json' >/dev/null; then
   fail "tracked source contains a likely credential literal"
 fi
 ok "no obvious tracked credential literal"
+
+if git grep -nE '(/Users/[^/]+/|/root/Desktop/)' -- . ':!bootstrap/check.sh' >/dev/null; then
+  fail "tracked source contains a developer-machine absolute path"
+fi
+ok "no developer-machine absolute paths"
+
+node scripts/check-markdown-links.mjs
+ok "Markdown links and README images resolve"
 
 # --- Backend install/typecheck/test ---
 pushd bridge >/dev/null

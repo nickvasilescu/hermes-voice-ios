@@ -9,24 +9,30 @@ struct RootView: View {
 
             VStack(spacing: 32) {
                 Spacer()
-                AmbientOrbView(phase: store.state.phase)
-                Spacer()
-                TaskRailView(viewModel: TaskRailViewModel(tasks: store.state.sortedTasks))
+                AmbientOrbView(phase: store.state.phase, voiceMode: store.state.voiceMode)
+                VoiceControlBar(store: store)
+                Spacer(minLength: 8)
+                TaskRailView(viewModel: TaskRailViewModel(
+                    tasks: store.state.sortedTasks,
+                    pendingDelegations: Array(store.state.pendingDelegations.values)
+                ))
                     .padding(.bottom, 24)
             }
 
 #if DEBUG
-            VStack {
-                HStack {
+            if !isReadmeDemo {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button("Reset client session") { store.resetClientSession() }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("reset-client-session")
+                    }
                     Spacer()
-                    Button("Reset client session") { store.resetClientSession() }
-                        .font(.caption)
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("reset-client-session")
                 }
-                Spacer()
+                .padding()
             }
-            .padding()
 #endif
 
             if store.needsBootstrapCredential {
@@ -50,6 +56,67 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+#if DEBUG
+    private var isReadmeDemo: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        return arguments.contains("--readme-demo-active")
+            || arguments.contains("--readme-demo-paused")
+    }
+#endif
+}
+
+private struct VoiceControlBar: View {
+    @ObservedObject var store: HermesVoiceStore
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                if store.state.voiceMode == .active, store.state.activeResponseId != nil {
+                    Button {
+                        store.stopSpeaking()
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                            .frame(minWidth: 86)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .accessibilityHint("Stops the current spoken response immediately")
+                }
+
+                if store.state.voiceMode == .paused {
+                    Button {
+                        store.resumeVoice()
+                    } label: {
+                        Label("Resume voice", systemImage: "play.fill")
+                            .frame(minWidth: 132)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .accessibilityHint("Turns the microphone and voice responses back on")
+                } else {
+                    Button {
+                        store.pauseVoice()
+                    } label: {
+                        Label("Pause voice", systemImage: "pause.fill")
+                            .frame(minWidth: 132)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!store.state.isCallEstablished)
+                    .accessibilityHint("Pauses the microphone and spoken responses while Hermes tasks continue")
+                }
+            }
+            .controlSize(.large)
+
+            if store.state.voiceMode == .paused {
+                Text("Microphone and narration are paused. Hermes tasks keep running.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal)
     }
 }
 

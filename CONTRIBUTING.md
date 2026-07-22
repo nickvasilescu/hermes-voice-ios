@@ -1,60 +1,63 @@
 # Contributing
 
+Thanks for improving Hermes Voice. The repository is intentionally split into
+a small TypeScript bridge, a SwiftUI client, and an explicit protocol between
+them. Most regressions happen when only one side of that protocol changes.
+
+## Development setup
+
+1. Read [`AGENTS.md`](AGENTS.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+2. Install Node.js 22+, Xcode, an iOS Simulator runtime, and
+   [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+3. Run:
+
+```bash
+make check
+make ios-test
+```
+
+For live voice, copy `.env.example` to `bridge/.env` and follow
+[`docs/SETUP.md`](docs/SETUP.md). Never commit the resulting file.
+
 ## Ground rules
 
-1. **`docs/PROTOCOL.md` is the contract.** If you change a request/response
-   shape, an SSE event, or a tool schema, update `docs/PROTOCOL.md` in the
-   same change. Code and docs disagreeing is treated as a bug.
-2. **Test-first for `bridge/`.** Add or update a `bridge/test/*.test.ts`
-   file that fails for the right reason before writing the implementation.
-   Every PR touching `bridge/src` should touch `bridge/test` too, unless
-   it's a pure refactor with no behavior change (say so in the PR).
-3. **Be honest about status.** This repo distinguishes `[IMPLEMENTED]`,
-   `[SCAFFOLDED]`, and `[MOCKED]` throughout the docs. If you scaffold
-   something rather than fully implement it, say so in the code comment and
-   in the relevant doc — don't let it read as finished.
-4. **No secrets, ever.** No API keys, tokens, or `.env` files in commits.
-   `bootstrap/check.sh` fails the build if `bridge/.env` is tracked.
+- Update `docs/PROTOCOL.md` with every request, response, SSE, Realtime event,
+  tool-schema, or identifier-lifecycle change.
+- Add or update tests with behavior changes. Bridge work should cover the
+  service layer and HTTP edge where appropriate; iOS work should cover the
+  reducer or injected networking boundary.
+- Preserve the five-tool boundary and server-owned session scope described in
+  `AGENTS.md`.
+- Be explicit about what is implemented, mocked, or not production-ready.
+- Do not commit API keys, tokens, `.env` files, local xcconfigs, signing
+  identities, private hostnames, or operator-specific deployment inventory.
+- Do not modify the generated `.xcodeproj`. Change `project.yml` and regenerate.
 
-## Backend (`bridge/`)
+## Pull requests
 
-```bash
-cd bridge
-npm install
-npm run typecheck   # tsc --noEmit, strict
-npm test            # node's built-in test runner, node:test
-npm run dev          # local server with mock Hermes provider by default
-```
+Keep changes focused. In the description, include:
 
-- Runtime: Node 22, TypeScript strict, ESM (`"type": "module"`).
-- Keep dependencies minimal. Before adding one, check whether Node's
-  standard library already covers it (this repo deliberately uses
-  `node:crypto` for UUIDs and `node:test` instead of adding `uuid` or a
-  third-party test runner).
-- Business logic belongs in `src/tasks/service.ts` and friends, not in
-  route handlers — routes should stay thin (parse, call service, respond).
+- the user-visible outcome;
+- protocol or security implications;
+- tests actually run and their results;
+- screenshots for visible SwiftUI changes; and
+- any hardware/live-service behavior not verified.
 
-## iOS (`ios/HermesVoice`)
+Use short imperative commit subjects, such as `Add task approval recovery`.
 
-This repo was built without access to Xcode or a Swift toolchain (Linux
-dev environment). That means:
-- Swift source under `ios/HermesVoice` is written and reviewed for
-  correctness by hand, but **not compiled or run in this repo's CI**.
-- The pure reducer/codec logic (`Core/Reducer/*`) is written to be testable
-  with plain XCTest/Swift Testing once you have Xcode — please add tests
-  there for new reducer behavior, and run them locally with
-  `xcodebuild test` or in Xcode before opening a PR.
-- After editing `project.yml`, regenerate the Xcode project with
-  `make ios-generate` (requires [XcodeGen](https://github.com/yonaskolb/XcodeGen))
-  and confirm it builds in Xcode before pushing.
-
-## Commit style
-
-Short, imperative subject lines (`Add task cancellation route`, not `Added`
-or `Adding`). Explain *why* in the body when it isn't obvious from the diff.
-
-## Running everything
+## Commands
 
 ```bash
-make check   # typecheck + test the backend, sanity-check secrets/tooling
+make bridge-install   # npm ci/install dependencies
+make bridge-dev       # local bridge on 127.0.0.1:8787
+make bridge-typecheck
+make bridge-test
+make ios-generate
+make ios-test
+make check
 ```
+
+## Security reports
+
+Do not open a public issue for a suspected vulnerability or exposed secret.
+Follow [`SECURITY.md`](SECURITY.md).

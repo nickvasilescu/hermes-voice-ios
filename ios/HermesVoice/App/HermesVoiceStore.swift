@@ -1,13 +1,12 @@
 import Foundation
 import SwiftUI
 
-/// The imperative shell: owns `SessionState`, feeds `SessionEvent`s through
-/// `SessionReducer`, and interprets the resulting `Effect`s by driving
-/// `BackendClient`, `SSEClient`, and `SessionCoordinator`. This is the only
-/// class in the app that mutates `SessionState`. [IMPLEMENTED]
+/// Imperative lifecycle shell for the reducer, bridge, SSE subscription, and
+/// Realtime coordinator. Every asynchronous callback is scoped to a monotonic
+/// lifecycle generation so Reset/Stop is a hard cancellation boundary.
 @MainActor
 final class HermesVoiceStore: ObservableObject {
-    @Published private(set) var state = SessionState()
+    @Published private(set) var state: SessionState
     @Published var bootstrapCredentialInput = ""
     @Published private(set) var needsBootstrapCredential = false
 
@@ -15,91 +14,161 @@ final class HermesVoiceStore: ObservableObject {
     private let sessionManager: ClientSessionManager
     private let bootstrapCredentialStore: BootstrapCredentialStore
     private let coordinator: SessionCoordinator
-    private let sseClient = SSEClient()
+    private let sseClient: SSEClient
+    private let sseReconnectDelaysNanoseconds: [UInt64]
 
-    /// Guards against `start()` being called more than once concurrently
-    /// or redundantly (e.g. `onAppear` firing again after a view
-    /// re-composition) — it should mint/connect/subscribe exactly once per
-    /// app session, not once per call.
+    private var lifecycleGeneration: UInt64 = 0
+    private var callbacksEnabled = false
     private var startTask: Task<Void, Never>?
+    private var sseReconnectTask: Task<Void, Never>?
+    private var toolTasks: [UUID: Task<Void, Never>] = [:]
+    private var sseReconnectAttempt = 0
+    private var sseAuthRecoveryUsed = false
 
     init(
         backend: BackendClientProtocol,
         sessionManager: ClientSessionManager,
         bootstrapCredentialStore: BootstrapCredentialStore,
         coordinator: SessionCoordinator,
-        instructionsHolder: SessionInstructionsHolder? = nil
+        initialState: SessionState = SessionState(),
+        instructionsHolder: SessionInstructionsHolder? = nil,
+        sseClient: SSEClient = SSEClient(),
+        sseReconnectDelaysNanoseconds: [UInt64] = [
+            1_000_000_000,
+            2_000_000_000,
+            4_000_000_000,
+            8_000_000_000,
+            15_000_000_000,
+        ]
     ) {
+        self.state = initialState
         self.backend = backend
         self.sessionManager = sessionManager
         self.bootstrapCredentialStore = bootstrapCredentialStore
         self.coordinator = coordinator
+        self.sseClient = sseClient
+        self.sseReconnectDelaysNanoseconds = sseReconnectDelaysNanoseconds.isEmpty ? [15_000_000_000] : sseReconnectDelaysNanoseconds
 
         instructionsHolder?.store = self
 
         coordinator.onServerEvent = { [weak self] event in
-            Task { @MainActor in self?.dispatch(.wire(event)) }
+            Task { @MainActor in
+                guard let self, self.callbacksEnabled else { return }
+                self.dispatch(.wire(event))
+            }
         }
         coordinator.onCallEstablished = { [weak self] in
-            Task { @MainActor in self?.dispatch(.callEstablished) }
+            Task { @MainActor in
+                guard let self, self.callbacksEnabled else { return }
+                self.dispatch(.callEstablished)
+            }
         }
         coordinator.onDisconnected = { [weak self] reason in
-            Task { @MainActor in self?.dispatch(.transportDisconnected(reason: reason)) }
+            Task { @MainActor in
+                guard let self, self.callbacksEnabled else { return }
+                self.dispatch(.transportDisconnected(reason: reason))
+            }
         }
         coordinator.onBootstrapCredentialRequired = { [weak self] in
-            Task { @MainActor in self?.needsBootstrapCredential = true }
+            Task { @MainActor in
+                guard let self, self.callbacksEnabled else { return }
+                self.needsBootstrapCredential = true
+            }
         }
     }
 
-    /// Idempotent: a second call while the first is still starting (or
-    /// after it already finished) is a no-op rather than a second
-    /// bootstrap/mint/connect/SSE-subscribe cycle.
+    /// Idempotent for one lifecycle generation.
     func start() {
         guard startTask == nil else { return }
+        callbacksEnabled = true
+        coordinator.setMicrophoneEnabled(state.voiceMode == .active)
         state.phase = .connecting
+        let generation = lifecycleGeneration
         startTask = Task { [weak self] in
-            await self?.runStart()
+            await self?.runStart(generation: generation)
         }
     }
 
     func stop() {
-        startTask?.cancel()
-        startTask = nil
-        Task { await coordinator.teardown() }
-        Task { await sseClient.disconnect() }
-        state = SessionState(systemInstructions: state.systemInstructions, toolDefinitions: state.toolDefinitions, voice: state.voice)
+        beginLifecycleTransition(clearSession: false, restart: false, credentialToSave: nil)
+    }
+
+    func stopSpeaking() {
+        dispatch(.stopSpeakingRequested)
+    }
+
+    func pauseVoice() {
+        dispatch(.pauseVoiceRequested)
+    }
+
+    func resumeVoice() {
+        dispatch(.resumeVoiceRequested)
     }
 
     func saveBootstrapCredentialAndRetry() {
         let value = bootstrapCredentialInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
-        Task {
-            await bootstrapCredentialStore.save(value)
-            bootstrapCredentialInput = ""
-            needsBootstrapCredential = false
-            startTask = nil
-            start()
-        }
+        bootstrapCredentialInput = ""
+        beginLifecycleTransition(clearSession: true, restart: true, credentialToSave: value)
     }
 
     /// Debug/operator escape hatch for a bridge restart or deliberate token
-    /// revocation. Clears only the minted client session; the separately
-    /// stored bootstrap credential remains in Keychain.
+    /// revocation. The separately stored bootstrap credential is retained.
     func resetClientSession() {
+        beginLifecycleTransition(clearSession: true, restart: true, credentialToSave: nil)
+    }
+
+    /// Invalidates callbacks immediately, then serially tears down every I/O
+    /// leg before an optional restart. A new subscription can therefore never
+    /// be canceled by cleanup from the previous generation.
+    private func beginLifecycleTransition(
+        clearSession: Bool,
+        restart: Bool,
+        credentialToSave: String?
+    ) {
+        lifecycleGeneration &+= 1
+        let transitionGeneration = lifecycleGeneration
+        callbacksEnabled = false
+
         startTask?.cancel()
+        sseReconnectTask?.cancel()
+        sseReconnectTask = nil
+        for task in toolTasks.values { task.cancel() }
+        toolTasks.removeAll()
+
+        let configuration = (
+            instructions: state.systemInstructions,
+            tools: state.toolDefinitions,
+            voice: state.voice
+        )
+        state = SessionState(
+            systemInstructions: configuration.instructions,
+            toolDefinitions: configuration.tools,
+            voice: configuration.voice
+        )
+        needsBootstrapCredential = false
+        sseReconnectAttempt = 0
+        sseAuthRecoveryUsed = false
+
         startTask = Task { [weak self] in
             guard let self else { return }
+            guard self.lifecycleGeneration == transitionGeneration else { return }
+            if let credentialToSave {
+                await bootstrapCredentialStore.save(credentialToSave)
+                guard self.lifecycleGeneration == transitionGeneration else { return }
+            }
             await coordinator.teardown()
+            guard self.lifecycleGeneration == transitionGeneration else { return }
             await sseClient.disconnect()
-            await sessionManager.invalidate()
-            state = SessionState(
-                systemInstructions: state.systemInstructions,
-                toolDefinitions: state.toolDefinitions,
-                voice: state.voice
-            )
-            needsBootstrapCredential = false
-            startTask = nil
-            start()
+            guard self.lifecycleGeneration == transitionGeneration else { return }
+            if clearSession {
+                await sessionManager.invalidate()
+            } else {
+                await sessionManager.cancelPendingBootstrap()
+            }
+            guard self.lifecycleGeneration == transitionGeneration else { return }
+            self.startTask = nil
+            if restart { self.start() }
         }
     }
 
@@ -108,80 +177,211 @@ final class HermesVoiceStore: ObservableObject {
         return try await backend.bootstrapSession(bootstrapCredential: credential)
     }
 
-    private func runStart() async {
+    private func runStart(generation: UInt64) async {
         do {
             let session = try await sessionManager.ensureSession { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.bootstrapSession()
             }
+            try Task.checkCancellation()
+            guard isActive(generation) else { return }
             dispatch(.hermesSessionAssigned(session.hermesSessionId))
+
+            await subscribeToTaskEvents(generation: generation, sessionToken: session.sessionToken)
+            await hydrateTasks(generation: generation)
+            try Task.checkCancellation()
+            guard isActive(generation) else { return }
+
+            let result = await coordinator.start(voice: state.voice)
+            guard isActive(generation) else { return }
+            switch result {
+            case .success:
+                break // coordinator callback dispatches callEstablished
+            case let .failure(error):
+                if error.requiresBootstrapCredential { needsBootstrapCredential = true }
+                dispatch(.callEstablishmentFailed(error.message))
+            }
+        } catch is CancellationError {
+            // Reset/Stop is an expected cancellation boundary, not a user error.
         } catch {
-            if case BackendClientError.http(status: 401, code: _, detail: _) = error {
-                needsBootstrapCredential = true
-            }
+            guard isActive(generation) else { return }
+            if Self.isUnauthorized(error) { needsBootstrapCredential = true }
             dispatch(.callEstablishmentFailed("could not bootstrap a client session: \(error)"))
-            return
-        }
-
-        subscribeToTaskEvents()
-        await hydrateTasks()
-
-        let result = await coordinator.start(voice: state.voice)
-        switch result {
-        case .success:
-            break // .callEstablished arrives via the coordinator callback
-        case let .failure(error):
-            if error.requiresBootstrapCredential {
-                needsBootstrapCredential = true
-            }
-            dispatch(.callEstablishmentFailed(error.message))
         }
     }
 
-    /// `GET /v1/tasks` so the rail (and rotation recap) reflect work that
-    /// outlived a previous app launch. Dispatched before the call is
-    /// established so `.taskUpdated` merges state without narrating.
-    private func hydrateTasks() async {
+    private func hydrateTasks(generation: UInt64) async {
         do {
             let token = try await sessionManager.ensureSession { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.bootstrapSession()
             }.sessionToken
             let tasks = try await backend.listTasks(sessionToken: token, status: nil)
-            for task in tasks {
-                dispatch(.taskUpdated(task))
-            }
+            try Task.checkCancellation()
+            guard isActive(generation) else { return }
+            for task in tasks { dispatch(.taskUpdated(task)) }
+        } catch is CancellationError {
+            return
         } catch {
-            if Self.isUnauthorized(error) {
-                needsBootstrapCredential = true
-            }
+            guard isActive(generation) else { return }
+            if Self.isUnauthorized(error) { needsBootstrapCredential = true }
             Log.error("could not hydrate tasks: \(error)")
         }
     }
 
-    /// Every state change funnels through here — the one place that calls
-    /// the pure reducer and then interprets its effects.
+    // MARK: - SSE lifecycle
+
+    private func subscribeToTaskEvents(generation: UInt64, sessionToken: String? = nil) async {
+        guard isActive(generation) else { return }
+        let token: String
+        do {
+            if let sessionToken {
+                token = sessionToken
+            } else {
+                token = try await sessionManager.ensureSession { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.bootstrapSession()
+                }.sessionToken
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isActive(generation) else { return }
+            if Self.isUnauthorized(error) { needsBootstrapCredential = true }
+            Log.error("could not subscribe to task events: \(error)")
+            return
+        }
+        guard isActive(generation) else { return }
+
+        await sseClient.connect(
+            to: Config.bridgeBaseURL.appendingPathComponent("v1/events"),
+            sessionToken: token,
+            onEvent: { [weak self] sseEvent in
+                guard sseEvent.name.hasPrefix("task."), let data = sseEvent.data.data(using: .utf8),
+                      let task = try? JSONDecoder().decode(HermesTask.self, from: data) else { return }
+                Task { @MainActor in
+                    guard let self, self.isActive(generation) else { return }
+                    // A real event proves the stream is stable; a rapid
+                    // connect-then-EOF must not reset exponential backoff.
+                    self.sseReconnectAttempt = 0
+                    self.dispatch(.taskUpdated(task))
+                }
+            },
+            onDisconnect: { [weak self] error in
+                Task { @MainActor in
+                    await self?.sseDidDisconnect(error, rejectedToken: token, generation: generation)
+                }
+            }
+        )
+    }
+
+    private func sseDidDisconnect(_ error: Error?, rejectedToken: String, generation: UInt64) async {
+        guard isActive(generation) else { return }
+        if let error { Log.error("SSE disconnected: \(error)") }
+
+        if let error, Self.isUnauthorized(error) {
+            guard !sseAuthRecoveryUsed else {
+                needsBootstrapCredential = true
+                return
+            }
+            sseAuthRecoveryUsed = true
+            do {
+                let observedGeneration = await sessionManager.sessionGeneration()
+                // Preserve a token already refreshed by a concurrent REST
+                // request; otherwise retire precisely the rejected token.
+                let didInvalidate = await sessionManager.invalidate(ifCurrentTokenMatches: rejectedToken)
+                guard isActive(generation) else { return }
+                if !didInvalidate,
+                   let current = await sessionManager.currentSession(),
+                   current.sessionToken != rejectedToken {
+                    dispatch(.hermesSessionAssigned(current.hermesSessionId))
+                    await subscribeToTaskEvents(generation: generation, sessionToken: current.sessionToken)
+                    await hydrateTasks(generation: generation)
+                    return
+                }
+                let recoveryGeneration = await sessionManager.sessionGeneration()
+                let expectedRecoveryGeneration = observedGeneration &+ (didInvalidate ? 1 : 0)
+                guard recoveryGeneration == expectedRecoveryGeneration else { throw CancellationError() }
+                let fresh = try await sessionManager.ensureSession(expectedGeneration: recoveryGeneration) { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.bootstrapSession()
+                }
+                try Task.checkCancellation()
+                guard isActive(generation) else { return }
+                dispatch(.hermesSessionAssigned(fresh.hermesSessionId))
+                await subscribeToTaskEvents(generation: generation, sessionToken: fresh.sessionToken)
+                await hydrateTasks(generation: generation)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isActive(generation) else { return }
+                if Self.isUnauthorized(error) { needsBootstrapCredential = true }
+                Log.error("could not recover SSE client session: \(error)")
+            }
+            return
+        }
+
+        scheduleSSEReconnect(generation: generation)
+    }
+
+    /// Transport failures and clean EOF both reconnect independently of the
+    /// Realtime call. Delays grow exponentially and cap at the final entry.
+    private func scheduleSSEReconnect(generation: UInt64) {
+        guard isActive(generation) else { return }
+        sseReconnectTask?.cancel()
+        let index = min(sseReconnectAttempt, sseReconnectDelaysNanoseconds.count - 1)
+        let delay = sseReconnectDelaysNanoseconds[index]
+        sseReconnectAttempt += 1
+        sseReconnectTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            guard let self, self.isActive(generation) else { return }
+            await self.subscribeToTaskEvents(generation: generation)
+        }
+    }
+
+    // MARK: - Reducer effects
+
     private func dispatch(_ event: SessionEvent) {
+        guard callbacksEnabled else { return }
         let effects = SessionReducer.reduce(&state, event)
         for effect in effects { perform(effect) }
     }
 
     private func perform(_ effect: Effect) {
+        let generation = lifecycleGeneration
         switch effect {
         case let .sendClientEvent(clientEvent):
             coordinator.send(clientEvent)
 
+        case let .setMicrophoneEnabled(enabled):
+            coordinator.setMicrophoneEnabled(enabled)
+
         case let .executeTool(callId, name, argumentsJSON):
-            Task { await runTool(callId: callId, name: name, argumentsJSON: argumentsJSON) }
+            let id = UUID()
+            toolTasks[id] = Task { [weak self] in
+                await self?.runTool(
+                    id: id,
+                    generation: generation,
+                    callId: callId,
+                    name: name,
+                    argumentsJSON: argumentsJSON
+                )
+            }
 
         case let .scheduleReconnect(delay):
             coordinator.scheduleReconnect(after: delay, voice: state.voice) { [weak self] result in
                 Task { @MainActor in
+                    guard let self, self.isActive(generation) else { return }
                     switch result {
                     case .success:
-                        self?.dispatch(.callEstablished)
+                        self.dispatch(.callEstablished)
                     case let .failure(error):
-                        self?.dispatch(.callEstablishmentFailed(error.message))
+                        if error.requiresBootstrapCredential { self.needsBootstrapCredential = true }
+                        self.dispatch(.callEstablishmentFailed(error.message))
                     }
                 }
             }
@@ -191,80 +391,44 @@ final class HermesVoiceStore: ObservableObject {
         }
     }
 
-    private func runTool(callId: String, name: String, argumentsJSON: String) async {
+    private func runTool(
+        id: UUID,
+        generation: UInt64,
+        callId: String,
+        name: String,
+        argumentsJSON: String
+    ) async {
+        defer { if isActive(generation) { toolTasks[id] = nil } }
         do {
             let token = try await sessionManager.ensureSession { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.bootstrapSession()
             }.sessionToken
-            let outputJSON = try await ToolRegistry.execute(name: name, callId: callId, argumentsJSON: argumentsJSON, backend: backend, sessionToken: token)
-            dispatch(.toolResultReady(callId: callId, outputJSON: outputJSON))
+            let result = try await ToolRegistry.execute(
+                name: name,
+                callId: callId,
+                argumentsJSON: argumentsJSON,
+                backend: backend,
+                sessionToken: token
+            )
+            try Task.checkCancellation()
+            guard isActive(generation) else { return }
+            dispatch(.toolResultReady(callId: callId, result: result))
+        } catch is CancellationError {
+            return
         } catch {
-            if Self.isUnauthorized(error) {
-                needsBootstrapCredential = true
-            }
+            guard isActive(generation) else { return }
+            if Self.isUnauthorized(error) { needsBootstrapCredential = true }
             dispatch(.toolExecutionFailed(callId: callId, message: String(describing: error)))
         }
     }
 
-    private func subscribeToTaskEvents(retryUnauthorized: Bool = true) {
-        Task {
-            let token: String
-            do {
-                token = try await sessionManager.ensureSession { [weak self] in
-                guard let self else { throw CancellationError() }
-                return try await self.bootstrapSession()
-            }.sessionToken
-            } catch {
-                Log.error("could not subscribe to task events: \(error)")
-                return
-            }
-            await sseClient.connect(
-                to: Config.bridgeBaseURL.appendingPathComponent("v1/events"),
-                sessionToken: token,
-                onEvent: { [weak self] sseEvent in
-                    guard sseEvent.name.hasPrefix("task."), let data = sseEvent.data.data(using: .utf8) else { return }
-                    guard let task = try? JSONDecoder().decode(HermesTask.self, from: data) else { return }
-                    Task { @MainActor in self?.dispatch(.taskUpdated(task)) }
-                },
-                onDisconnect: { [weak self] error in
-                    if let error { Log.error("SSE disconnected: \(error)") }
-                    guard retryUnauthorized, let error, Self.isUnauthorized(error) else { return }
-                    Task { @MainActor in
-                        await self?.recoverSessionAndResubscribe()
-                    }
-                    // A dedicated reconnect/backoff loop for the SSE leg
-                    // (independent of Realtime rotation, per PROTOCOL.md §6)
-                    // is intentionally not implemented in this MVP; the app
-                    // currently relies on a fresh subscribe on next
-                    // `start()`. See docs/ARCHITECTURE.md "Known limitations".
-                }
-            )
-        }
-    }
-
-    private func recoverSessionAndResubscribe() async {
-        do {
-            await sessionManager.invalidate()
-            let session = try await sessionManager.ensureSession { [weak self] in
-                guard let self else { throw CancellationError() }
-                return try await self.bootstrapSession()
-            }
-            dispatch(.hermesSessionAssigned(session.hermesSessionId))
-            subscribeToTaskEvents(retryUnauthorized: false)
-            await hydrateTasks()
-        } catch {
-            if Self.isUnauthorized(error) {
-                needsBootstrapCredential = true
-            }
-            Log.error("could not recover SSE client session: \(error)")
-        }
+    private func isActive(_ generation: UInt64) -> Bool {
+        callbacksEnabled && generation == lifecycleGeneration
     }
 
     nonisolated private static func isUnauthorized(_ error: Error) -> Bool {
-        guard case BackendClientError.http(status: 401, code: _, detail: _) = error else {
-            return false
-        }
+        guard case BackendClientError.http(status: 401, code: _, detail: _) = error else { return false }
         return true
     }
 }

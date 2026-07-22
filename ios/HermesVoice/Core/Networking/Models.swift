@@ -47,8 +47,15 @@ struct HermesTaskHistoryEntry: Codable, Equatable, Identifiable {
 struct HermesTask: Codable, Equatable, Identifiable {
     var id: String
     var hermesSessionId: String
+    /// Hermes conversation scope for this task and its follow-ups. Optional
+    /// so a newly updated app can still decode tasks from an older bridge.
+    var hermesThreadId: String? = nil
     var status: HermesTaskStatus
     var instruction: String
+    /// Echoes the create-task idempotency key. For voice delegations this is
+    /// the Realtime `call_id`, which lets optimistic UI reconcile against
+    /// either the REST response or an SSE event without guessing by text.
+    var clientRequestId: String? = nil
     var summary: String?
     var progress: HermesTaskProgress?
     var result: AnyCodable?

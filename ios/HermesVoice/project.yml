@@ -32,9 +32,7 @@ targets:
         buildPhase: none # referenced via INFOPLIST_FILE, not copied as a resource
     settings:
       base:
-        DEVELOPMENT_TEAM: XTSHP9E2CK
         INFOPLIST_FILE: Resources/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.hermesvoice.app
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

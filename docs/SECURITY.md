@@ -1,81 +1,108 @@
-# Security
+# Security model
 
-Candid status: this is an MVP scaffold. The protections below are implemented, but a real multi-user deployment still needs an identity provider, durable storage, TLS termination, and operational monitoring.
+Hermes Voice keeps the mobile client narrow: it receives short-lived client
+credentials and can invoke five typed task operations. It never receives the
+standard OpenAI key or the Hermes provider key.
 
 ## Secret handling
 
-- `OPENAI_API_KEY` remains on the bridge. The iOS app receives only a short-lived OpenAI Realtime client credential from `POST /v1/realtime/session`.
-- No bridge-wide bearer token is compiled into the app. `Info.plist` and both `.xcconfig` files contain no authentication credential.
-- `POST /v1/session` returns an opaque client-session token once. iOS stores it in Keychain through `KeychainSessionStore`, never `UserDefaults`, `Info.plist`, or an xcconfig.
-- The bridge stores only the SHA-256 hash of each client-session token.
-- `.env` is ignored, while the bootstrap script and CI reject a tracked `.env`.
-- Structured logs recursively redact authorization, API keys, tokens, passwords, and OpenAI client-secret values.
-- `BRIDGE_MOCK_OPENAI=1` emits an unmistakable `mock_ek_` development credential and must not be enabled in production.
-- Dewey's production wrapper resolves `op://` references in memory with
-  `op run`; `bridge/.env.refs` contains references and non-secret settings,
-  never resolved values. The bridge listens on loopback and is owned by
-  Supervisor; Cloudflare remains the only intended public ingress.
+- `OPENAI_API_KEY` remains on the bridge. The app receives only a short-lived
+  Realtime client secret from `POST /v1/realtime/session`.
+- `HERMES_API_KEY` remains on the bridge and is used only by the API Server
+  provider.
+- Client session tokens are returned once, stored by iOS in Keychain, and
+  retained server-side only as SHA-256 hashes.
+- `.env`, resolved secret-reference files, local xcconfigs, signing material,
+  and common key formats are ignored. Local and CI checks reject obvious
+  tracked credentials.
+- Structured logs recursively redact authorization, API keys, tokens,
+  passwords, and OpenAI client-secret fields.
+- `BRIDGE_MOCK_OPENAI=1` emits an unmistakable `mock_ek_` development value and
+  must not be enabled in production.
+- The bridge sets `OpenAI-Safety-Identifier` while minting each client secret,
+  using the opaque server-owned client scope rather than PII.
 
-## Authentication and session authorization
+Do not store resolved production values in this repository. Use a hosting
+platform or secret manager, least-privilege service identity, and in-memory
+injection. If a credential is committed, revoke it before rewriting history.
 
-`POST /v1/session` is the client-session bootstrap route:
+## Authentication and authorization
 
-1. In production, it requires `BRIDGE_BOOTSTRAP_SECRET`.
-2. The bridge generates both an opaque bearer token and a `hermesSessionId`.
-3. Only the token hash and its session binding are retained server-side.
-4. Every task, SSE, and Realtime-credential request requires the minted bearer token.
-5. Middleware resolves `hermesSessionId` from the server-side binding. The client cannot choose, forge, or override another session ID.
+`POST /v1/session` is the bootstrap route:
 
-If a bridge restart forgets an otherwise unexpired Keychain token, protected
-requests recover once: the client invalidates that token, bootstraps a fresh
-session with the operator credential, and retries once. A second `401` never
-loops. A bootstrap `401` returns to the credential prompt.
+1. In production, this scaffold requires `BRIDGE_BOOTSTRAP_SECRET`.
+2. The bridge generates an opaque bearer token and `hermesSessionId`.
+3. Only the token hash and session binding are retained.
+4. Every task, SSE, and Realtime-credential request requires that token.
+5. Middleware resolves ownership from the token; the client cannot choose or
+   override a session ID.
 
-The static bootstrap secret is not a mobile-app credential. Do not bundle it in iOS. For a real deployment, replace or front the bootstrap seam with authenticated login, passkeys, Sign in with Apple, managed-device identity, or attestation. An open bootstrap endpoint is permitted only in explicit non-production development mode.
+The static bootstrap value is an operator/test seam, not a mobile-app secret or
+a production identity system. Replace or front it with authenticated login,
+passkeys, managed-device identity, or attestation before serving real users.
+
+If a bridge restart forgets a still-valid Keychain token, the client performs
+one bounded recovery: invalidate, bootstrap again, and retry once. A second
+`401` stops rather than looping.
+
+## Realtime and Hermes boundary
+
+- Realtime receives exactly five typed tools and no raw terminal, filesystem,
+  HTTP, MCP, or Hermes protocol access.
+- Function calls are deduplicated by OpenAI `call_id` before side effects.
+- `hermesSessionId` is an authenticated ownership scope and never
+  model-controlled.
+- Each independent task receives a bridge-generated `hermesThreadId`.
+  Follow-ups reuse only that task's thread.
+- Approval resolution requires the pending `approvalId` to match the task.
+- Provider startup failures move tasks to a failed terminal state.
+
+These boundaries limit blast radius; they do not make arbitrary Hermes tools
+safe. A deployment must still authorize individual actions and defend against
+prompt injection in untrusted task content.
 
 ## Input and memory bounds
 
-- Zod schemas impose length and shape limits on instructions, context, request IDs, follow-ups, cancellation reasons, approval IDs, and notes.
-- Client sessions, tasks, idempotency records, and rate-limit buckets use bounded in-memory storage with TTL/eviction rather than unbounded maps.
-- Express retains a global JSON-body ceiling as a second line of defense.
+- Zod schemas limit instruction, context, request-ID, follow-up, cancellation,
+  approval, and note shapes.
+- Client sessions, tasks, idempotency records, and rate-limit buckets use
+  bounded in-memory stores with TTL eviction.
+- Express enforces a global JSON-body limit.
 
-These controls reduce accidental or hostile memory growth, but the in-memory implementation remains development-grade. Production should use a durable datastore with quotas and per-identity accounting.
+The in-memory implementation is development-grade. Production needs durable
+storage, quotas, per-identity accounting, and explicit retention/deletion.
 
 ## Transport
 
-- Configure `BRIDGE_CORS_ALLOWLIST` explicitly. An empty allowlist is permissive only outside production; production denies cross-origin access by default.
-- The bridge serves plain HTTP. Terminate TLS at a correctly configured reverse proxy or load balancer before any internet-facing deployment.
-- Do not trust arbitrary proxy forwarding headers. Configure Express `trust proxy` only for the actual trusted proxy topology.
-- OpenAI WebRTC signaling uses the current `POST /v1/realtime/calls` path. The account API key is never used by the mobile client.
-
-## Rate limiting
-
-The bridge includes a bounded, per-IP, fixed-window limiter. It is suitable for local development and a single-process demo, not distributed production. Production needs a shared limiter, authenticated-user quotas, and carefully configured proxy address handling.
+- Mobile and browser clients should use WebRTC with short-lived client
+  credentials; standard keys are server-only.
+- Configure `BRIDGE_CORS_ALLOWLIST` explicitly. Empty is permissive only in
+  development and denies cross-origin production requests.
+- The Node process serves HTTP. Terminate TLS at a trusted reverse proxy or
+  load balancer.
+- Trust forwarded addresses only from the known proxy topology.
+- Preserve SSE streaming and bound connection/resource usage.
 
 ## Data at rest
 
-- The bridge task store is in memory and bounded. Restarting the bridge drops tasks and in-flight state.
-- No task instruction, result, or approval detail is written to disk by this scaffold.
-- The iOS client persists only its client-session material in Keychain.
+- The bridge task store is in memory and loses tasks on restart.
+- The scaffold does not intentionally write task instructions, results, or
+  approvals to disk.
+- iOS persists client-session and bootstrap material only in Keychain.
 
-A production Hermes provider and durable queue should become the source of truth for task state, with explicit retention and deletion policies.
+Production must define storage encryption, retention, deletion, backup, audit,
+and device-revocation behavior.
 
-## Realtime and Hermes trust boundary
+## Production requirements
 
-- Realtime receives exactly five narrow, typed tools. It receives no raw terminal, filesystem, HTTP, MCP, or Hermes protocol access.
-- Function calls are deduplicated by OpenAI `call_id` before side effects execute.
-- `hermesSessionId` is not model-controlled and is not accepted from the iOS request. It is derived from the authenticated client session.
-- Approval requests require the pending `approvalId` to match the task before the bridge resolves an action.
-- Hermes-provider startup failures move tasks to a failed terminal state rather than leaving them queued indefinitely.
+Before internet exposure to real users:
 
-## Remaining production requirements
-
-Before exposing this system to real users:
-
-1. Put authenticated user or device identity in front of `POST /v1/session`.
-2. Use TLS everywhere and rotate/revoke client sessions.
-3. Replace memory stores with durable, quota-enforced infrastructure.
-4. Add audit logging for approvals and sensitive Hermes actions without logging secrets or unnecessary prompt content.
-5. Run iOS static analysis, `xcodebuild test`, strict Swift concurrency checks, and physical-device testing.
-6. Threat-model prompt injection, stolen devices, replay, token theft, abusive audio sessions, and compromised Hermes providers.
-7. Replace this section with an actual security contact and disclosure policy.
+1. Add real user/device identity and session revocation.
+2. Use TLS end to end and a stable privacy-preserving safety identifier.
+3. Replace in-memory state and rate limiting with durable shared services.
+4. Add minimal, redacted approval and security audit logs.
+5. Threat-model prompt injection, stolen devices, replay, token theft, abusive
+   audio sessions, and compromised Hermes providers.
+6. Run static analysis, bridge tests, iOS tests, dependency review, secret
+   scanning, and physical-device audio acceptance.
+7. Follow the private disclosure process in the root `SECURITY.md`.

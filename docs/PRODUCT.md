@@ -51,9 +51,9 @@ blocking the conversation.
 - **Exactly five tools, on purpose.** Constraining Realtime to
   delegate/status/followup/cancel/approve (never a sixth "just this once"
   tool) keeps the boundary between "things Realtime can do" and "things
-  Hermes can do" legible — see `CLAUDE.md`. If a capability doesn't fit
+  Hermes can do" legible — see `AGENTS.md`. If a capability doesn't fit
   one of the five, it belongs inside Hermes' own tool surface, not
-  bolted onto Realtime.
+  bolted onto Realtime. See `AGENTS.md` for the invariant.
 - **Async by default, not a spinner.** Nothing in this product blocks the
   conversation waiting for Hermes. `delegate_to_hermes` returns a task id
   immediately; the app is designed around "keep talking, get told later,"

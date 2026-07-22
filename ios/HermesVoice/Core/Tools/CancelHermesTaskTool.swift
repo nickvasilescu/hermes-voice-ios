@@ -18,12 +18,12 @@ struct CancelHermesTaskTool: HermesTool {
         )
     }
 
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         let args = try decodeArguments(argumentsJSON)
         guard let taskId = args["taskId"] as? String, !taskId.isEmpty else {
             throw ToolError.invalidArguments("cancel_hermes_task requires taskId")
         }
         let task = try await backend.cancel(sessionToken: sessionToken, taskId: taskId, reason: args["reason"] as? String)
-        return encodeSummary(task)
+        return encodeResult(task)
     }
 }

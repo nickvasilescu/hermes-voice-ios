@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+*.env.refs
 *.pem
 *.p12
 *.mobileprovision
@@ -12,6 +13,8 @@ bridge/node_modules/
 bridge/dist/
 npm-debug.log*
 *.tsbuildinfo
+**/__pycache__/
+*.py[cod]
 
 # --- macOS ---
 .DS_Store
@@ -25,6 +28,7 @@ ios/**/*.xcuserstate
 ios/**/DerivedData/
 ios/**/.build/
 ios/**/*.xcworkspace/xcuserdata/
+ios/HermesVoice/Config/Local.xcconfig
 
 # --- editor ---
 .vscode/
@@ -34,3 +38,8 @@ ios/**/*.xcworkspace/xcuserdata/
 # --- misc ---
 *.log
 .tmp/
+.context/
+
+# Private operator-specific deployment material. Public deployments should
+# follow docs/DEPLOYMENT.md and keep host inventory/secrets outside the repo.
+scripts/dewey/

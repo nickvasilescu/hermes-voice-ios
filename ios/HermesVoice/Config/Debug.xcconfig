@@ -1,11 +1,9 @@
-// Local / device debug defaults. No bearer token/secret belongs in this file
-// — the client session token is minted at runtime (POST /v1/session) and
-// stored only in Keychain. See docs/SECURITY.md.
-//
-// Xcode treats `//` as a comment, so we split the scheme with `/$()/`.
-//
-// Dewey public tunnel (Cloudflare → bridge :8787). Use this so a physical
-// device or a Simulator that can't reach Dewey's LAN still hits the bridge.
-// For a bridge running only on your Mac, switch back to:
-//   BRIDGE_BASE_URL = http:/$()/localhost:8787
-BRIDGE_BASE_URL = https:/$()/dewey-bridge.momentumclaw.app
+// Safe public defaults. Xcode treats `//` as a comment, so URL schemes use
+// `/$()/`. Simulator builds can reach a bridge running on the same Mac.
+BRIDGE_BASE_URL = http:/$()/127.0.0.1:8787
+PRODUCT_BUNDLE_IDENTIFIER = com.example.HermesVoice
+
+// Copy Local.xcconfig.example to Local.xcconfig for a physical device or a
+// deployed bridge. Local.xcconfig is gitignored and must never contain API
+// keys or bearer tokens.
+#include? "Local.xcconfig"

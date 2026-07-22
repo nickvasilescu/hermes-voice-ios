@@ -29,6 +29,7 @@ protocol WebRTCEngine: AnyObject {
     func setLocalDescription(sdp: String) async throws
     func setRemoteDescription(sdp: String) async throws
     func sendOnDataChannel(_ data: Data) throws
+    func setMicrophoneEnabled(_ enabled: Bool)
     func close()
 
     var onDataChannelMessage: ((Data) -> Void)? { get set }
@@ -39,6 +40,7 @@ protocol WebRTCEngine: AnyObject {
 enum WebRTCTransportError: Error {
     case noEngineConfigured
     case sdpExchangeFailed(status: Int, detail: String?)
+    case sessionConfigurationFailed(detail: String)
     case notConnected
     case credentialExpired
     case invalidSDPAnswer
@@ -57,10 +59,10 @@ enum WebRTCTransportError: Error {
 /// file called the legacy `GET/POST /v1/realtime?model=...` SDP endpoint;
 /// that shape is no longer current and has been replaced.
 ///
-/// What's NOT implemented: the actual `WebRTCEngine` — see that protocol's
-/// doc comment. Without one injected, `connect(with:)` throws
+/// The production app injects `StaselWebRTCEngine`; tests and previews can
+/// still supply another engine or `nil`. Without one, `connect(with:)` throws
 /// `.noEngineConfigured` rather than silently pretending to work.
-/// [SCAFFOLDED at the binary level, IMPLEMENTED at the signaling level]
+/// [IMPLEMENTED]
 /// `@unchecked Sendable`: this class is `@MainActor`-isolated, and every
 /// stored/mutable property (`callId`, the two callback slots inherited
 /// from the protocol) is only ever read or written while isolated to the
@@ -82,6 +84,7 @@ final class WebRTCRealtimeTransport: RealtimeTransport, @unchecked Sendable {
     private let engine: WebRTCEngine?
     private let session: URLSession
     private let callsEndpoint: URL
+    private var isMicrophoneEnabled = true
 
     init(
         engine: WebRTCEngine?,
@@ -107,6 +110,7 @@ final class WebRTCRealtimeTransport: RealtimeTransport, @unchecked Sendable {
 
         try engine.createPeerConnection()
         try engine.addLocalAudioTrack()
+        engine.setMicrophoneEnabled(isMicrophoneEnabled)
         try engine.createDataChannel(label: "oai-events")
 
         let offerSDP = try await engine.createOffer()
@@ -121,6 +125,11 @@ final class WebRTCRealtimeTransport: RealtimeTransport, @unchecked Sendable {
     func send(_ event: RealtimeClientEvent) throws {
         guard let engine else { throw WebRTCTransportError.notConnected }
         try engine.sendOnDataChannel(event.toData())
+    }
+
+    func setMicrophoneEnabled(_ enabled: Bool) {
+        isMicrophoneEnabled = enabled
+        engine?.setMicrophoneEnabled(enabled)
     }
 
     func disconnect() async {

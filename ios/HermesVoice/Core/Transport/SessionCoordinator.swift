@@ -80,6 +80,7 @@ final class SessionCoordinator: @unchecked Sendable {
     private let toolDefinitions: [RealtimeToolDefinition]
     private let callLifetimeSeconds: TimeInterval
     private var lastVoice: String?
+    private var isMicrophoneEnabled = true
 
     private let mutex = AsyncMutex()
     private var generationCounter = 0
@@ -124,6 +125,14 @@ final class SessionCoordinator: @unchecked Sendable {
 
     func send(_ event: RealtimeClientEvent) {
         try? primaryTransport?.send(event)
+    }
+
+    /// Persists across reconnects and make-before-break rotations so a
+    /// paused app cannot accidentally reopen the microphone on a new call.
+    func setMicrophoneEnabled(_ enabled: Bool) {
+        isMicrophoneEnabled = enabled
+        primaryTransport?.setMicrophoneEnabled(enabled)
+        rotatingTransport?.setMicrophoneEnabled(enabled)
     }
 
     func scheduleReconnect(after delay: TimeInterval, voice: String?, onReconnected: @escaping (Result<Void, ConnectError>) -> Void) {
@@ -273,6 +282,7 @@ final class SessionCoordinator: @unchecked Sendable {
     ) async throws -> RealtimeTransport {
         guard credential.connectDeadline > Date() else { throw WebRTCTransportError.credentialExpired }
         let transport = makeTransport()
+        transport.setMicrophoneEnabled(isMicrophoneEnabled)
         track(transport)
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -295,7 +305,7 @@ final class SessionCoordinator: @unchecked Sendable {
                 case .sessionUpdated:
                     finish(.success(()))
                 case let .errorEvent(message):
-                    finish(.failure(WebRTCTransportError.sdpExchangeFailed(status: -1, detail: message)))
+                    finish(.failure(WebRTCTransportError.sessionConfigurationFailed(detail: message)))
                 default:
                     break
                 }

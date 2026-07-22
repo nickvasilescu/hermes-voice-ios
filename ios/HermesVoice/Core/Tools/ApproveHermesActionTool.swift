@@ -20,7 +20,7 @@ struct ApproveHermesActionTool: HermesTool {
         )
     }
 
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         let args = try decodeArguments(argumentsJSON)
         guard let taskId = args["taskId"] as? String, !taskId.isEmpty else {
             throw ToolError.invalidArguments("approve_hermes_action requires taskId")
@@ -32,6 +32,6 @@ struct ApproveHermesActionTool: HermesTool {
             throw ToolError.invalidArguments("approve_hermes_action requires decision to be 'approve' or 'reject'")
         }
         let task = try await backend.approve(sessionToken: sessionToken, taskId: taskId, approvalId: approvalId, decision: decision, note: args["note"] as? String)
-        return encodeSummary(task)
+        return encodeResult(task)
     }
 }

@@ -13,11 +13,33 @@ enum ConversationPhase: Equatable {
     case failed(String)
 }
 
+/// Voice capture/output is independent from Hermes task execution. Pausing
+/// voice must leave REST, SSE, and tool work running in the background.
+enum VoiceMode: Equatable {
+    case active
+    case paused
+}
+
 struct PendingToolCall: Equatable, Identifiable {
     var id: String { callId }
     var callId: String
     var name: String
     var argumentsJSON: String
+}
+
+enum PendingDelegationStatus: Equatable {
+    case sending
+    case failed(String)
+}
+
+/// Optimistic task activity created as soon as Realtime delegates work. It
+/// is replaced by the authoritative Task returned by REST or SSE.
+struct PendingDelegation: Equatable, Identifiable {
+    var id: String { callId }
+    var callId: String
+    var instruction: String
+    var status: PendingDelegationStatus = .sending
+    var createdAt: Date = Date()
 }
 
 /// Everything the pure reducer needs to decide what happens next. This is
@@ -26,6 +48,8 @@ struct PendingToolCall: Equatable, Identifiable {
 /// [IMPLEMENTED]
 struct SessionState: Equatable {
     var phase: ConversationPhase = .idle
+    var voiceMode: VoiceMode = .active
+    var activeResponseId: String?
     /// Server-assigned (see docs/PROTOCOL.md §2) — set once via
     /// `.hermesSessionAssigned` after `ClientSessionManager` bootstraps.
     /// Empty string before that; nothing round-trips it back to the
@@ -33,12 +57,14 @@ struct SessionState: Equatable {
     var hermesSessionId: String = ""
     var isCallEstablished: Bool = false
     var pendingToolCalls: [PendingToolCall] = []
+    var pendingDelegations: [String: PendingDelegation] = [:]
     var tasks: [String: HermesTask] = [:]
     /// Fingerprint of the last Hermes update we already asked Realtime to
     /// narrate, keyed by task id — prevents duplicate speech on SSE replay
     /// or identical progress ticks.
     var lastNarratedFingerprints: [String: String] = [:]
     var lastAssistantTranscript: String = ""
+    var hasDeferredResponse: Bool = false
     var lastError: String?
     var reconnectAttempt: Int = 0
 
@@ -74,6 +100,21 @@ struct SessionState: Equatable {
     /// In-flight / approval tasks for rotation recap (PROTOCOL.md §6).
     var activeTasksForRecap: [HermesTask] {
         sortedTasks.filter { !$0.status.isTerminal }
+    }
+
+    /// A bounded, factual recap injected on resume when tool/task updates
+    /// arrived while speech was paused.
+    var deferredResponsePrompt: String {
+        let recent = sortedTasks.prefix(5)
+        guard !recent.isEmpty else {
+            return "Voice output was paused while work continued. Resume briefly, using any pending tool result, and then listen."
+        }
+        let lines = recent.map { task in
+            let detail = task.progress?.message ?? task.summary ?? task.error?.message ?? task.status.rawValue
+            return "- \(task.instruction): \(task.status.rawValue) — \(detail)"
+        }
+        return "Voice output was paused while Hermes kept working. Briefly summarize only the latest relevant changes, then listen:\n"
+            + lines.joined(separator: "\n")
     }
 
     /// Returns `true` (and records the id) the first time this `callId` is
@@ -140,8 +181,11 @@ struct SessionState: Equatable {
     You are the voice of Hermes. You handle the live conversation, speech, \
     and turn-taking yourself. For any durable task, memory lookup, or \
     side-effecting action, delegate to Hermes with delegate_to_hermes \
-    rather than trying to do it yourself. Long Hermes tasks run in the \
-    background: acknowledge the delegation, keep talking naturally, and \
+    rather than trying to do it yourself. Start a new task for a new, \
+    independent objective. When the user adds information, corrects, or \
+    clarifies an existing active task, use send_followup_to_hermes with that \
+    task id so the work stays in the same Hermes conversation. Long Hermes \
+    tasks run in the background: acknowledge the delegation, keep talking naturally, and \
     narrate progress/completion when it arrives. Always read back a \
     pending approval and get an explicit yes/no before calling \
     approve_hermes_action.

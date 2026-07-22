@@ -1,0 +1,7 @@
+// Copy to Local.xcconfig and customize. Local.xcconfig is gitignored.
+// Values here become part of the app bundle, so URLs and signing metadata are
+// acceptable; credentials are not.
+
+BRIDGE_BASE_URL = https:/$()/bridge.example.com
+PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.HermesVoice
+DEVELOPMENT_TEAM = YOUR_TEAM_ID

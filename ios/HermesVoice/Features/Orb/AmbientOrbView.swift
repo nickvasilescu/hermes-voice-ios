@@ -6,6 +6,7 @@ import SwiftUI
 /// speaks. [IMPLEMENTED]
 struct AmbientOrbView: View {
     let phase: ConversationPhase
+    let voiceMode: VoiceMode
 
     @State private var pulse = false
 
@@ -21,7 +22,7 @@ struct AmbientOrbView: View {
                     )
                 )
                 .frame(width: 220, height: 220)
-                .scaleEffect(pulse ? 1.06 : 0.94)
+                .scaleEffect(voiceMode == .paused ? 0.96 : (pulse ? 1.06 : 0.94))
                 .animation(
                     .easeInOut(duration: animationDuration).repeatForever(autoreverses: true),
                     value: pulse
@@ -37,6 +38,7 @@ struct AmbientOrbView: View {
     }
 
     private var color: Color {
+        if voiceMode == .paused { return .indigo }
         switch phase {
         case .idle: return .gray
         case .connecting, .reconnecting: return .yellow
@@ -57,6 +59,7 @@ struct AmbientOrbView: View {
     }
 
     private var label: String {
+        if voiceMode == .paused { return "Paused" }
         switch phase {
         case .idle: return "Idle"
         case .connecting: return "Connecting…"
@@ -71,7 +74,7 @@ struct AmbientOrbView: View {
 }
 
 #Preview {
-    AmbientOrbView(phase: .listening)
+    AmbientOrbView(phase: .listening, voiceMode: .active)
         .padding()
         .background(Color.black)
 }

@@ -101,6 +101,37 @@ final class ReauthenticatingBackendClientTests: XCTestCase {
         XCTAssertEqual(counts.bootstrap, 1)
         XCTAssertEqual(counts.list, 4)
     }
+
+    func testLateREST401PreservesSessionAlreadyRecoveredBySSEPath() async throws {
+        let base = LateUnauthorizedBackend()
+        let manager = ClientSessionManager(persistence: RecoveryPersistence())
+        _ = try await manager.ensureSession {
+            MintedClientSession(sessionToken: "st_stale", hermesSessionId: "hs_stale", expiresAt: futureISO8601())
+        }
+        let client = ReauthenticatingBackendClient(
+            base: base,
+            sessionManager: manager,
+            bootstrapCredential: { "operator-secret" }
+        )
+
+        let request = Task { try await client.listTasks(sessionToken: "st_stale", status: nil) }
+        await base.waitUntilStaleRequestIsPending()
+
+        // Models SSE winning the recovery race while the REST 401 is still
+        // in flight from the bridge.
+        await manager.invalidate(ifCurrentTokenMatches: "st_stale")
+        _ = try await manager.ensureSession {
+            MintedClientSession(sessionToken: "st_fresh", hermesSessionId: "hs_fresh", expiresAt: futureISO8601())
+        }
+        await base.releaseStale401()
+
+        _ = try await request.value
+        let counts = await base.counts()
+        let currentToken = await manager.currentToken()
+        XCTAssertEqual(counts.bootstrap, 0, "the late REST failure must reuse, not replace, SSE's fresh session")
+        XCTAssertEqual(counts.list, 2)
+        XCTAssertEqual(currentToken, "st_fresh")
+    }
 }
 
 private actor RecoveryPersistence: ClientSessionPersisting {
@@ -170,6 +201,59 @@ private actor RecoveryBackend: BackendClientProtocol {
     func followup(sessionToken: String, taskId: String, message: String) async throws -> HermesTask { fatalError("not exercised") }
     func cancel(sessionToken: String, taskId: String, reason: String?) async throws -> HermesTask { fatalError("not exercised") }
     func approve(sessionToken: String, taskId: String, approvalId: String, decision: ApprovalDecision, note: String?) async throws -> HermesTask { fatalError("not exercised") }
+}
+
+private actor LateUnauthorizedBackend: BackendClientProtocol {
+    private let gate = LateRequestGate()
+    private var bootstrapCallCount = 0
+    private var listCallCount = 0
+
+    func waitUntilStaleRequestIsPending() async { await gate.waitUntilStarted() }
+    func releaseStale401() async { await gate.release() }
+    func counts() -> (bootstrap: Int, list: Int) { (bootstrapCallCount, listCallCount) }
+
+    func bootstrapSession(bootstrapCredential: String?) async throws -> MintedClientSession {
+        bootstrapCallCount += 1
+        return MintedClientSession(sessionToken: "st_unexpected", hermesSessionId: "hs_unexpected", expiresAt: futureISO8601())
+    }
+
+    func listTasks(sessionToken: String, status: HermesTaskStatus?) async throws -> [HermesTask] {
+        listCallCount += 1
+        if sessionToken == "st_stale" {
+            await gate.waitForRelease()
+            throw BackendClientError.http(status: 401, code: "unauthorized", detail: nil)
+        }
+        guard sessionToken == "st_fresh" else {
+            throw BackendClientError.http(status: 401, code: "unauthorized", detail: nil)
+        }
+        return []
+    }
+
+    func mintRealtimeSession(sessionToken: String, voice: String?) async throws -> RealtimeSessionResponse { fatalError("not exercised") }
+    func createTask(sessionToken: String, instruction: String, context: [String: AnyCodable]?, clientRequestId: String?) async throws -> HermesTask { fatalError("not exercised") }
+    func getTask(sessionToken: String, taskId: String) async throws -> HermesTask { fatalError("not exercised") }
+    func followup(sessionToken: String, taskId: String, message: String) async throws -> HermesTask { fatalError("not exercised") }
+    func cancel(sessionToken: String, taskId: String, reason: String?) async throws -> HermesTask { fatalError("not exercised") }
+    func approve(sessionToken: String, taskId: String, approvalId: String, decision: ApprovalDecision, note: String?) async throws -> HermesTask { fatalError("not exercised") }
+}
+
+private actor LateRequestGate {
+    private var started = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func waitForRelease() async {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        while !started { await Task.yield() }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 private func futureISO8601() -> String {

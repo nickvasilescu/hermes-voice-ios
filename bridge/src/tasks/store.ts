@@ -96,8 +96,10 @@ export class TaskStore {
     const task: Task = {
       id: `task_${randomUUID()}`,
       hermesSessionId: params.hermesSessionId,
+      hermesThreadId: `ht_${randomUUID()}`,
       status: "queued",
       instruction: params.instruction,
+      clientRequestId: params.clientRequestId,
       createdAt: now,
       updatedAt: now,
       history: [{ at: now, kind: "created", message: "Task created." }],

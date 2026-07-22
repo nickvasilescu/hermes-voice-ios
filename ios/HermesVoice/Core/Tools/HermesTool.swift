@@ -26,6 +26,15 @@ enum ToolError: Error {
     case invalidArguments(String)
 }
 
+/// Both halves of a successful tool execution: compact JSON for Realtime and
+/// the authoritative bridge task for the local activity UI. Keeping the task
+/// out of the model-facing JSON preserves the low-latency tool contract while
+/// allowing the app to update immediately, without waiting for SSE.
+struct HermesToolExecutionResult: Equatable {
+    var outputJSON: String
+    var task: HermesTask
+}
+
 /// One of the five Realtime-facing tools. Each implementation is a thin
 /// translation from Realtime function-call arguments to a `BackendClient`
 /// call — see docs/PROTOCOL.md §3 for the exact schema each `definition`
@@ -41,8 +50,8 @@ protocol HermesTool: Sendable {
     /// `sessionToken` is supplied by the caller (`ToolRegistry.execute`,
     /// ultimately `HermesVoiceStore`) from `ClientSessionManager` — never a
     /// Realtime-model-controlled argument, same rule as the old
-    /// `hermesSessionId` (see CLAUDE.md "Non-negotiables").
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String
+    /// `hermesSessionId` (see AGENTS.md "Non-negotiable invariants").
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult
 }
 
 extension HermesTool {
@@ -58,9 +67,12 @@ extension HermesTool {
         return object
     }
 
-    func encodeSummary(_ task: HermesTask) -> String {
+    func encodeResult(_ task: HermesTask) -> HermesToolExecutionResult {
         let summary = HermesTaskSummary(task: task)
         let data = (try? JSONEncoder().encode(summary)) ?? Data("{}".utf8)
-        return String(data: data, encoding: .utf8) ?? "{}"
+        return HermesToolExecutionResult(
+            outputJSON: String(data: data, encoding: .utf8) ?? "{}",
+            task: task
+        )
     }
 }

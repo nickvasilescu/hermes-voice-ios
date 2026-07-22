@@ -28,6 +28,9 @@ enum SessionReducer {
 
         case let .taskUpdated(task):
             state.tasks[task.id] = task
+            if let clientRequestId = task.clientRequestId {
+                state.pendingDelegations[clientRequestId] = nil
+            }
             // Only narrate once the Realtime call is live, and only when the
             // task's narratable fingerprint changed (hydration + SSE replays
             // must not spam response.create).
@@ -36,6 +39,10 @@ enum SessionReducer {
             guard state.lastNarratedFingerprints[task.id] != fingerprint else { return [] }
             guard let prompt = SessionState.narrationPrompt(for: task) else { return [] }
             state.lastNarratedFingerprints[task.id] = fingerprint
+            guard state.voiceMode == .active else {
+                state.hasDeferredResponse = true
+                return []
+            }
             return [
                 .sendClientEvent(.conversationMessage(role: "user", text: prompt)),
                 .sendClientEvent(.responseCreate),
@@ -74,20 +81,74 @@ enum SessionReducer {
             if let reason { effects.append(.log("transport disconnected: \(reason)")) }
             return effects
 
-        case let .toolResultReady(callId, outputJSON):
+        case let .toolResultReady(callId, result):
             state.pendingToolCalls.removeAll { $0.callId == callId }
-            return [
-                .sendClientEvent(.functionCallOutput(callId: callId, outputJSON: outputJSON)),
-                .sendClientEvent(.responseCreate),
+            state.pendingDelegations[callId] = nil
+            if let clientRequestId = result.task.clientRequestId {
+                state.pendingDelegations[clientRequestId] = nil
+            }
+            state.tasks[result.task.id] = result.task
+            var effects: [Effect] = [
+                .sendClientEvent(.functionCallOutput(callId: callId, outputJSON: result.outputJSON)),
             ]
+            if state.voiceMode == .active {
+                effects.append(.sendClientEvent(.responseCreate))
+            } else {
+                state.hasDeferredResponse = true
+            }
+            return effects
 
         case let .toolExecutionFailed(callId, message):
             state.pendingToolCalls.removeAll { $0.callId == callId }
-            return [
+            if var pending = state.pendingDelegations[callId] {
+                pending.status = .failed(message)
+                state.pendingDelegations[callId] = pending
+            }
+            var effects: [Effect] = [
                 .sendClientEvent(.functionCallOutput(callId: callId, outputJSON: ToolErrorOutput(error: message).jsonString())),
-                .sendClientEvent(.responseCreate),
                 .log("tool \(callId) failed: \(message)"),
             ]
+            if state.voiceMode == .active {
+                effects.insert(.sendClientEvent(.responseCreate), at: 1)
+            } else {
+                state.hasDeferredResponse = true
+            }
+            return effects
+
+        case .stopSpeakingRequested:
+            guard state.isCallEstablished,
+                  let responseId = state.activeResponseId else { return [] }
+            state.activeResponseId = nil
+            state.lastAssistantTranscript = ""
+            state.phase = .listening
+            return [
+                .sendClientEvent(.responseCancel(responseId: responseId)),
+                .sendClientEvent(.outputAudioBufferClear),
+            ]
+
+        case .pauseVoiceRequested:
+            guard state.voiceMode == .active else { return [] }
+            state.voiceMode = .paused
+            var effects: [Effect] = [.setMicrophoneEnabled(false)]
+            if let responseId = state.activeResponseId {
+                effects.append(.sendClientEvent(.responseCancel(responseId: responseId)))
+                effects.append(.sendClientEvent(.outputAudioBufferClear))
+            }
+            state.activeResponseId = nil
+            state.lastAssistantTranscript = ""
+            if state.isCallEstablished { state.phase = .listening }
+            return effects
+
+        case .resumeVoiceRequested:
+            guard state.voiceMode == .paused else { return [] }
+            state.voiceMode = .active
+            var effects: [Effect] = [.setMicrophoneEnabled(true)]
+            if state.isCallEstablished, state.hasDeferredResponse {
+                state.hasDeferredResponse = false
+                effects.append(.sendClientEvent(.conversationMessage(role: "user", text: state.deferredResponsePrompt)))
+                effects.append(.sendClientEvent(.responseCreate))
+            }
+            return effects
         }
     }
 
@@ -100,15 +161,21 @@ enum SessionReducer {
             return []
 
         case .inputAudioBufferSpeechStarted:
-            let wasBargeIn = state.phase == .assistantSpeaking
+            guard state.voiceMode == .active else { return [] }
+            let interruptedResponseId = state.activeResponseId
+            let wasBargeIn = interruptedResponseId != nil || state.phase == .assistantSpeaking
             state.phase = .userSpeaking
-            return wasBargeIn ? [.log("barge-in: user spoke over assistant audio")] : []
+            return wasBargeIn
+                ? [.log("realtime speech_started interrupted active response \(interruptedResponseId ?? "unknown"); possible user barge-in or speaker echo")]
+                : []
 
         case .inputAudioBufferSpeechStopped:
+            guard state.voiceMode == .active else { return [] }
             state.phase = .thinking
             return []
 
-        case .responseCreated:
+        case let .responseCreated(responseId):
+            state.activeResponseId = responseId
             if state.phase != .assistantSpeaking { state.phase = .thinking }
             return []
 
@@ -117,15 +184,20 @@ enum SessionReducer {
                 return [.log("ignoring duplicate function call \(callId) (\(name))")]
             }
             state.pendingToolCalls.append(PendingToolCall(callId: callId, name: name, argumentsJSON: argumentsJSON))
+            if name == "delegate_to_hermes", let instruction = delegationInstruction(from: argumentsJSON) {
+                state.pendingDelegations[callId] = PendingDelegation(callId: callId, instruction: instruction)
+            }
             state.phase = .thinking
             return [.executeTool(callId: callId, name: name, argumentsJSON: argumentsJSON)]
 
         case let .responseAudioTranscriptDelta(text):
+            guard state.voiceMode == .active else { return [] }
             state.phase = .assistantSpeaking
             state.lastAssistantTranscript += text
             return []
 
         case .responseDone:
+            state.activeResponseId = nil
             state.lastAssistantTranscript = ""
             state.phase = state.pendingToolCalls.isEmpty ? .listening : .thinking
             return []
@@ -138,6 +210,14 @@ enum SessionReducer {
         case .unknown:
             return []
         }
+    }
+
+    private static func delegationInstruction(from argumentsJSON: String) -> String? {
+        guard let data = argumentsJSON.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let instruction = object["instruction"] as? String else { return nil }
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// 1s, 2s, 4s, 8s, ... capped at 30s, per docs/PROTOCOL.md §6.

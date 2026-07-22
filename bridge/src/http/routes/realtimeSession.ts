@@ -28,7 +28,9 @@ export function realtimeSessionRouter(config: Config, fetchImpl: typeof fetch, l
       }
 
       try {
-        const result = await mintRealtimeSession(config, fetchImpl, parsed.data.voice);
+        // This server-generated opaque scope is stable for the client session
+        // and contains no user PII. OpenAI binds it to the ephemeral secret.
+        const result = await mintRealtimeSession(config, fetchImpl, parsed.data.voice, req.hermesSessionId);
         logger.info("realtime_session.minted", {
           hermesSessionId: req.hermesSessionId,
           sessionId: result.sessionId,

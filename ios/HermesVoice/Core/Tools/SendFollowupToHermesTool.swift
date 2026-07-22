@@ -6,7 +6,7 @@ struct SendFollowupToHermesTool: HermesTool {
     var definition: RealtimeToolDefinition {
         RealtimeToolDefinition(
             name: name,
-            description: "Send additional information or a clarification to a task Hermes is already working on.",
+            description: "Continue the same objective by sending additional information, a correction, or a clarification to an existing active task. This preserves the same Hermes conversation; do not create a new task for the follow-up.",
             parametersJSON: [
                 "type": "object",
                 "properties": [
@@ -18,7 +18,7 @@ struct SendFollowupToHermesTool: HermesTool {
         )
     }
 
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         let args = try decodeArguments(argumentsJSON)
         guard let taskId = args["taskId"] as? String, !taskId.isEmpty else {
             throw ToolError.invalidArguments("send_followup_to_hermes requires taskId")
@@ -27,6 +27,6 @@ struct SendFollowupToHermesTool: HermesTool {
             throw ToolError.invalidArguments("send_followup_to_hermes requires message")
         }
         let task = try await backend.followup(sessionToken: sessionToken, taskId: taskId, message: message)
-        return encodeSummary(task)
+        return encodeResult(task)
     }
 }

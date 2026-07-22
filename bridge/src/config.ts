@@ -1,5 +1,6 @@
 export interface Config {
   nodeEnv: string;
+  host: string;
   port: number;
   openaiApiKey: string | undefined;
   openaiRealtimeUrl: string;
@@ -69,6 +70,7 @@ const HOUR_MS = 60 * 60 * 1000;
 export function loadConfig(env: Record<string, string | undefined>): Config {
   return {
     nodeEnv: env.NODE_ENV ?? "development",
+    host: env.HOST?.trim() || "127.0.0.1",
     port: parseIntStrict(env.PORT, 8787, "PORT"),
     openaiApiKey: env.OPENAI_API_KEY,
     openaiRealtimeUrl: env.OPENAI_REALTIME_URL ?? "https://api.openai.com/v1/realtime/client_secrets",

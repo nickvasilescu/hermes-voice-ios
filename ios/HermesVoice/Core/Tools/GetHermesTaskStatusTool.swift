@@ -15,12 +15,12 @@ struct GetHermesTaskStatusTool: HermesTool {
         )
     }
 
-    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> String {
+    func execute(callId: String, argumentsJSON: String, backend: BackendClientProtocol, sessionToken: String) async throws -> HermesToolExecutionResult {
         let args = try decodeArguments(argumentsJSON)
         guard let taskId = args["taskId"] as? String, !taskId.isEmpty else {
             throw ToolError.invalidArguments("get_hermes_task_status requires taskId")
         }
         let task = try await backend.getTask(sessionToken: sessionToken, taskId: taskId)
-        return encodeSummary(task)
+        return encodeResult(task)
     }
 }

@@ -24,8 +24,7 @@ enum TransportConnectionState: Equatable, Sendable {
 /// The seam between the reducer/coordinator layer and an actual WebRTC
 /// engine. This protocol is real and is what `SessionCoordinator` codes
 /// against; `WebRTCRealtimeTransport` is the concrete boundary — see its
-/// doc comment for exactly what is and isn't wired up. [SCAFFOLDED at the
-/// binary level, IMPLEMENTED at the protocol/signaling level]
+/// doc comment for the concrete Stasel-backed implementation. [IMPLEMENTED]
 ///
 /// `@MainActor`-isolated: every conforming type (`WebRTCRealtimeTransport`)
 /// and its only caller (`SessionCoordinator`) live on the main actor, and
@@ -43,5 +42,6 @@ protocol RealtimeTransport: AnyObject, Sendable {
 
     func connect(with credential: RealtimeCredential) async throws
     func send(_ event: RealtimeClientEvent) throws
+    func setMicrophoneEnabled(_ enabled: Bool)
     func disconnect() async
 }

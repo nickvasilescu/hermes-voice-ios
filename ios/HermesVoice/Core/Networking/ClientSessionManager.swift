@@ -19,6 +19,10 @@ actor ClientSessionManager {
     private let persistence: ClientSessionPersisting
     private var current: StoredClientSession?
     private var inFlightBootstrap: Task<StoredClientSession, Error>?
+    /// Invalidates work that crossed an operator reset/stop boundary. A task
+    /// may ignore cooperative cancellation, so cancellation alone is not a
+    /// sufficient stale-write guard.
+    private var generation: UInt64 = 0
 
     init(persistence: ClientSessionPersisting) {
         self.persistence = persistence
@@ -31,32 +35,62 @@ actor ClientSessionManager {
         if let current, current.expiresAt > Date() {
             return current
         }
+        let requestedGeneration = generation
         if let restored = await persistence.load(), restored.expiresAt > Date() {
+            try Task.checkCancellation()
+            guard generation == requestedGeneration else { throw CancellationError() }
             current = restored
             return restored
         }
         if let inFlightBootstrap {
-            return try await inFlightBootstrap.value
+            let stored = try await inFlightBootstrap.value
+            try Task.checkCancellation()
+            guard generation == requestedGeneration else { throw CancellationError() }
+            if current == nil {
+                current = stored
+                await persistence.save(stored)
+                guard generation == requestedGeneration else {
+                    await persistence.clear()
+                    throw CancellationError()
+                }
+            }
+            return stored
         }
 
+        let bootstrapGeneration = generation
         let task = Task<StoredClientSession, Error> {
+            try Task.checkCancellation()
             let minted = try await bootstrap()
+            try Task.checkCancellation()
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             let expiresAt = formatter.date(from: minted.expiresAt) ?? Date().addingTimeInterval(3600)
-            let stored = StoredClientSession(
+            return StoredClientSession(
                 sessionToken: minted.sessionToken,
                 hermesSessionId: minted.hermesSessionId,
                 expiresAt: expiresAt
             )
-            await persistence.save(stored)
-            return stored
         }
         inFlightBootstrap = task
-        defer { inFlightBootstrap = nil }
+        defer {
+            if generation == bootstrapGeneration {
+                inFlightBootstrap = nil
+            }
+        }
 
         let stored = try await task.value
-        current = stored
+        try Task.checkCancellation()
+        guard generation == bootstrapGeneration else { throw CancellationError() }
+        if current != stored {
+            current = stored
+            await persistence.save(stored)
+        }
+        // `persistence.save` is an actor hop. If Reset ran while it was in
+        // progress, erase the stale write before returning it to a caller.
+        guard generation == bootstrapGeneration else {
+            await persistence.clear()
+            throw CancellationError()
+        }
         return stored
     }
 
@@ -71,8 +105,63 @@ actor ClientSessionManager {
         current?.hermesSessionId
     }
 
+    func currentSession() -> StoredClientSession? {
+        current
+    }
+
+    /// Snapshot used to prevent an asynchronous recovery that began before a
+    /// Reset from initiating a new bootstrap after that Reset completed.
+    func sessionGeneration() -> UInt64 {
+        generation
+    }
+
+    func recoverySnapshot() -> (generation: UInt64, current: StoredClientSession?) {
+        (generation, current)
+    }
+
+    func ensureSession(
+        expectedGeneration: UInt64,
+        bootstrap: @escaping @Sendable () async throws -> MintedClientSession
+    ) async throws -> StoredClientSession {
+        guard generation == expectedGeneration else { throw CancellationError() }
+        return try await ensureSession(bootstrap: bootstrap)
+    }
+
+    /// Clears a rejected token only when it is still current. If another REST
+    /// or SSE request already recovered, the fresh token is preserved and the
+    /// caller can reuse it. A nil current value is safe to clear only when no
+    /// newer bootstrap is in flight; this also removes a stale persisted token
+    /// before the manager has restored it in this process.
+    @discardableResult
+    func invalidate(ifCurrentTokenMatches rejectedToken: String) async -> Bool {
+        if let current, current.sessionToken != rejectedToken {
+            return false
+        }
+        if current == nil, inFlightBootstrap != nil {
+            return false
+        }
+        await invalidate()
+        return true
+    }
+
+    /// Operator/reset invalidation. Cancels the shared bootstrap and advances
+    /// the generation before clearing persistence, so even a non-cooperative
+    /// bootstrap completion cannot install its stale result afterward.
     func invalidate() async {
+        generation &+= 1
+        inFlightBootstrap?.cancel()
+        inFlightBootstrap = nil
         current = nil
         await persistence.clear()
+    }
+
+    /// Stops an unfinished bootstrap without discarding an already valid
+    /// session. Used when the app is stopped but the operator did not request
+    /// a credential reset.
+    func cancelPendingBootstrap() {
+        guard inFlightBootstrap != nil else { return }
+        generation &+= 1
+        inFlightBootstrap?.cancel()
+        inFlightBootstrap = nil
     }
 }

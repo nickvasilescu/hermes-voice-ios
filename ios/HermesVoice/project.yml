@@ -19,6 +19,9 @@ targets:
   HermesVoice:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
     sources:
       - path: App
       - path: Core
@@ -28,14 +31,8 @@ targets:
       - path: Resources/Info.plist
         buildPhase: none # referenced via INFOPLIST_FILE, not copied as a resource
     settings:
-      configs:
-        Debug:
-          xcconfig: Config/Debug.xcconfig
-        Release:
-          xcconfig: Config/Release.xcconfig
       base:
         INFOPLIST_FILE: Resources/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.hermesvoice.app
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

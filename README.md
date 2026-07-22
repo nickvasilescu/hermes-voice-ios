@@ -1,96 +1,99 @@
 # Hermes Voice
 
-An iPhone-first voice frontend for **Hermes** built on OpenAI Realtime
-(`gpt-realtime-2.1`, WebRTC). Realtime owns speech, turn-taking, and
-barge-in; Hermes owns durable tasks, memory, and tools; a small Node
-backend (`bridge/`) is the narrow waist between them.
+<p align="center">
+  <strong>An iPhone-first voice interface for OpenAI Realtime and durable Hermes agents.</strong>
+</p>
 
-Talk to it like a person. It listens, thinks out loud a little, and hands
-anything durable — "book me a table," "draft that email," "check on the
-thing from this morning" — off to Hermes, which works in the background and
-reports back through the same voice conversation while a lightweight task
-rail shows what's in flight.
+<p align="center">
+  <a href="https://github.com/nickvasilescu/hermes-voice-ios/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/nickvasilescu/hermes-voice-ios/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="iOS 17+" src="https://img.shields.io/badge/iOS-17%2B-111111?logo=apple">
+  <img alt="SwiftUI" src="https://img.shields.io/badge/UI-SwiftUI-F05138?logo=swift&logoColor=white">
+  <img alt="Node 22+" src="https://img.shields.io/badge/Node-22%2B-339933?logo=nodedotjs&logoColor=white">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+</p>
 
+Hermes Voice separates a natural, low-latency conversation from work that may
+take minutes or require approval. OpenAI Realtime owns speech and turn-taking.
+Hermes owns durable tasks and tools. A small TypeScript bridge mints short-lived
+Realtime credentials and streams task updates to the phone.
+
+> Public alpha: the local demo is complete and tested, but the included
+> in-memory stores and static bootstrap seam are not a production identity or
+> persistence layer. Read [Security](docs/SECURITY.md) before exposing a bridge
+> to the internet.
+
+<p align="center">
+  <img src="docs/images/hermes-voice-active.png" width="310" alt="Hermes Voice speaking while two delegated tasks are visible">
+  &nbsp;&nbsp;
+  <img src="docs/images/hermes-voice-paused.png" width="310" alt="Hermes Voice paused while background tasks continue">
+</p>
+
+## What works
+
+- Full-duplex voice over WebRTC with `gpt-realtime-2.1`.
+- Server-side VAD tuned for speakerphone use, while preserving barge-in.
+- Immediate **Stop** for the current spoken response.
+- **Pause/Resume voice** without stopping background Hermes tasks.
+- An optimistic activity rail: delegated work appears before the bridge reply,
+  then reconciles with REST and SSE state.
+- One Hermes conversation thread per independent task; follow-ups reuse only
+  that task's thread.
+- Five narrow Realtime tools: delegate, status, follow-up, cancel, and approve.
+- Short-lived OpenAI client secrets; the standard API key stays on the bridge.
+- A mock Hermes provider for local development and an API Server provider for
+  a real Hermes deployment.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Person] <--> IOS[iPhone app\nSwiftUI + reducer]
+    IOS <-->|WebRTC audio + events\nshort-lived client secret| OAI[OpenAI Realtime]
+    IOS <-->|HTTPS REST + SSE\nclient session token| B[Bridge\nNode 22 + TypeScript]
+    B -->|standard API key stays here| OAI
+    B <-->|HermesProvider| H[Hermes\nmock or API Server]
 ```
-   iPhone (ios/HermesVoice)
-   ┌─────────────────────────┐        WebRTC (audio + data)      ┌──────────────────┐
-   │  Ambient orb + task rail │ ─────────────────────────────────▶│ OpenAI Realtime  │
-   │  SwiftUI, pure reducer   │◀─────────────────────────────────  │ gpt-realtime-2.1 │
-   └─────────────┬────────────┘                                    └──────────────────┘
-                 │  HTTPS (REST + SSE)
-                 ▼
-   ┌─────────────────────────┐   HermesProvider interface   ┌──────────────────┐
-   │  bridge/ (Node 22, TS)  │ ─────────────────────────────▶│  Hermes           │
-   │  session mint, tasks,   │◀───────────────────────────── │  [SCAFFOLDED /    │
-   │  SSE, auth, rate limit  │                                │   MOCKED locally] │
-   └─────────────────────────┘                                └──────────────────┘
-```
 
-## Status at a glance
-
-| Piece | Status |
-|---|---|
-| `bridge/` backend (REST + SSE, auth, CORS, rate limiting) | **[IMPLEMENTED]** — typecheck + tests pass (`make bridge-test`) |
-| `MockHermesProvider` (local task simulator) | **[IMPLEMENTED]**, honestly a mock — see PROTOCOL.md §5 |
-| Real Hermes integration (`ApiServerHermesProvider`) | **[IMPLEMENTED]** against Hermes API Server runs API when `HERMES_API_BASE_URL` + `HERMES_API_KEY` are set |
-| OpenAI ephemeral session minting | **[IMPLEMENTED]** as a real call; response schema is best-effort (see PROTOCOL.md §4) |
-| iOS app structure, state machine, tools, networking | **[IMPLEMENTED]** — compiles and unit tests pass on macOS (`make ios-test`) |
-| WebRTC transport (peer connection engine) | **[IMPLEMENTED]** via Stasel WebRTC (`StaselWebRTCEngine`); signaling was already real |
-
-See `docs/ARCHITECTURE.md` for the full breakdown and why each boundary is
-drawn where it is.
-
-## Repo layout
-
-```
-bridge/                Node 22 + TypeScript backend
-  src/tasks/            task store, event bus, orchestration service
-  src/hermes/           HermesProvider interface, MockHermesProvider, ApiServerHermesProvider
-  src/http/             routes, validation, middleware (auth/cors/rate limit)
-  src/openai/           ephemeral Realtime session client
-  test/                 74 tests, node:test
-
-ios/HermesVoice/        SwiftUI app source (XcodeGen project.yml)
-  Core/Reducer/          pure state machine, Realtime wire event (de)coding
-  Core/Tools/            the five Realtime-facing tools
-  Core/Transport/        WebRTC abstraction + honest concrete boundary
-  Core/Networking/       REST/SSE client against bridge/
-  Features/              ambient orb, task rail, root view
-ios/HermesVoiceTests/   XCTest suite for the above
-
-docs/                   PROTOCOL, ARCHITECTURE, SECURITY, PRODUCT
-```
+The bridge never proxies audio. The iPhone talks directly to OpenAI over
+WebRTC using a short-lived client secret minted by the bridge, matching
+[OpenAI's recommended client flow](https://developers.openai.com/api/docs/guides/realtime-webrtc#connecting-using-an-ephemeral-token).
 
 ## Quickstart
 
-### Backend
+### Requirements
+
+- macOS with Xcode and an iOS 17+ simulator
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- Node.js 22+
+- An OpenAI API key for live voice
+- Optional: a Hermes API Server; without one, the bridge uses its mock provider
+
+### 1. Start the bridge
 
 ```bash
-cd bridge
-npm install
-cp ../.env.example .env   # then edit — see below
-npm run dev                # http://localhost:8787
+git clone https://github.com/nickvasilescu/hermes-voice-ios.git
+cd hermes-voice-ios
+cp .env.example bridge/.env
 ```
 
-Without an `OPENAI_API_KEY`, `POST /v1/realtime/session` returns `500
-openai_api_key_missing` — set `BRIDGE_MOCK_OPENAI=1` in `.env` to get an
-obviously-fake credential instead and exercise the rest of the stack
-without an OpenAI account. `MockHermesProvider` is the default task
-provider when Hermes API env vars are unset, so task
-delegation/progress/approval flows work fully locally regardless of OpenAI
-configuration. Point `HERMES_API_BASE_URL` + `HERMES_API_KEY` at a running
-Hermes API Server (gateway with `API_SERVER_ENABLED=true`) to use Dewey (or
-any other Hermes host) for real task execution.
+Edit `bridge/.env` and set `OPENAI_API_KEY`. Keep it in the bridge only—never
+paste it into Swift, an xcconfig, `Info.plist`, or the iOS app.
 
 ```bash
-npm run typecheck   # tsc --noEmit, strict
-npm test            # node:test, 74 tests
+make bridge-install
+make bridge-dev
 ```
 
-### iOS
+The default bridge listens at `http://127.0.0.1:8787` and uses
+`MockHermesProvider`, so task progress and approval flows work without a live
+Hermes server. Set `HERMES_API_BASE_URL` and `HERMES_API_KEY` to use the real
+provider.
 
-Requires Xcode + [XcodeGen](https://github.com/yonaskolb/XcodeGen) (macOS
-only — this repo was built without either, see "Known limitations"):
+To exercise only the REST/task stack without an OpenAI account, set
+`BRIDGE_MOCK_OPENAI=1`. The resulting fake client secret cannot establish a
+real voice call.
+
+### 2. Run the iOS app
 
 ```bash
 cd ios/HermesVoice
@@ -98,65 +101,87 @@ xcodegen generate
 open HermesVoice.xcodeproj
 ```
 
-`Config/Debug.xcconfig` points at the Dewey Cloudflare tunnel
-(`https://dewey-bridge.momentumclaw.app`) so a physical device can reach
-the bridge without being on Dewey's LAN. Flip it back to
-`http://localhost:8787` if the bridge is only running on your Mac.
+The committed Debug configuration points to `http://127.0.0.1:8787`, which is
+appropriate for the Simulator. For a physical iPhone or hosted bridge:
 
-Voice audio still needs a concrete `WebRTCEngine` wired into
-`WebRTCRealtimeTransport` — see `docs/ARCHITECTURE.md`. You can already
-exercise bridge health, session mint, task lifecycle, and (with
-`OPENAI_API_KEY`) Realtime credential minting from the device.
+```bash
+cp Config/Local.xcconfig.example Config/Local.xcconfig
+```
 
-### Dewey bridge (Orgo laptop ↔ phone)
+Then edit the gitignored `Local.xcconfig` with:
 
-On Dewey the Cloudflare hostname `dewey-bridge.momentumclaw.app` is **shared**:
+- a reachable HTTPS `BRIDGE_BASE_URL`;
+- a unique `PRODUCT_BUNDLE_IDENTIFIER`; and
+- your Apple `DEVELOPMENT_TEAM` for device signing.
 
-| Path | Service |
+Build and run the `HermesVoice` scheme. If `BRIDGE_BOOTSTRAP_SECRET` is set on
+the bridge, the first launch asks for it and stores it in the iOS Keychain. A
+production app should replace that operator credential with real user or
+device authentication.
+
+See [Setup](docs/SETUP.md) for device networking, real Hermes configuration,
+and troubleshooting.
+
+## Voice and task controls
+
+| Control | Effect |
 |---|---|
-| `/hooks/*` | Hermes AgentPhone iMessage webhooks (`:8788`) |
-| everything else | Hermes Voice bridge (`:8787`) |
+| Stop | Cancels only the active Realtime response and clears buffered audio. |
+| Pause voice | Disables the microphone and spoken narration; Hermes tasks keep running. |
+| Resume voice | Restores the microphone and narrates a bounded recap of updates received while paused. |
+| Activity rail | Shows optimistic delegations, progress, approvals, completion, and failure. |
 
-See `scripts/dewey/cloudflared.ingress.yml`. Pointing the whole hostname at
-the voice bridge breaks iMessage — don’t do that.
+## Hand this repository to an agent
 
-```bash
-cd ~/Desktop/repos/hermes-voice-ios
-# start-bridge refreshes bridge/.env from:
-#   - Hermes API key: /root/.hermes/voice_bridge_api_server_key
-#   - OpenAI key: 1Password field OPEN_AI_KEY on "Hermes Agent Secrets" (Dewey vault)
-bash scripts/dewey/start-bridge.sh
-bash scripts/dewey/smoke-bridge.sh   # expect REALTIME_LIVE_OK when OPEN_AI_KEY is set
+The repository includes [AGENTS.md](AGENTS.md) as the operational contract for
+coding agents. A useful first instruction is:
+
+```text
+Read AGENTS.md, docs/PROTOCOL.md, and docs/ARCHITECTURE.md completely.
+Run make check before editing. Preserve the five-tool boundary and update
+PROTOCOL.md with any wire-contract change. Never place credentials in the app
+or repository. Implement the requested change and run the relevant bridge and
+iOS tests before reporting completion.
 ```
 
-### Everything at once
+Agents should start with the protocol, not infer contracts from one side of
+the codebase. See [Contributing](CONTRIBUTING.md) for the review checklist.
+
+## Verification
 
 ```bash
-make check   # backend typecheck + test, secrets hygiene, tooling check
+make check       # install, bridge typecheck/tests, repository safety checks
+make ios-test    # regenerate the Xcode project and run the XCTest suite
 ```
 
-## The five tools
+CI runs bridge typechecking/tests, iOS tests, and Gitleaks. Local checks reject
+tracked environment files and common credential formats.
 
-Realtime's only capability is these five function calls — see
-`docs/PROTOCOL.md` §3 for exact JSON schemas:
+## Repository map
 
-`delegate_to_hermes` · `get_hermes_task_status` · `send_followup_to_hermes`
-· `cancel_hermes_task` · `approve_hermes_action`
+```text
+bridge/                 Express/TypeScript bridge and tests
+ios/HermesVoice/        SwiftUI app and XcodeGen project definition
+ios/HermesVoiceTests/   reducer, networking, coordinator, and store tests
+docs/PROTOCOL.md         authoritative REST/SSE/Realtime contract
+docs/ARCHITECTURE.md     component boundaries and design decisions
+docs/SETUP.md            detailed local and device setup
+docs/DEPLOYMENT.md       provider-neutral production deployment checklist
+docs/SECURITY.md         threat model and implemented controls
+AGENTS.md                instructions and invariants for coding agents
+```
 
-`hermesSessionId` is never a parameter the model supplies — it's injected
-by the iOS tool executor from app state.
+## Documentation
 
-## Docs
-
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — REST/SSE contracts, tool
-  schemas, session rotation protocol. Source of truth.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit,
-  what's implemented vs. scaffolded vs. mocked, and why.
-- [`docs/SECURITY.md`](docs/SECURITY.md) — auth, secrets handling, threat
-  model, what's dev-grade vs. production-grade today.
-- [`docs/PRODUCT.md`](docs/PRODUCT.md) — what this app is for, the core
-  interaction loop, and what's explicitly out of scope for the MVP.
+- [Protocol](docs/PROTOCOL.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Setup and troubleshooting](docs/SETUP.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Security model](docs/SECURITY.md)
+- [Product principles](docs/PRODUCT.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security reporting](SECURITY.md)
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT. See [LICENSE](LICENSE).

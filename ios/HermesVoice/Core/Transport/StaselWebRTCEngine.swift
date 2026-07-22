@@ -1,6 +1,7 @@
 import Foundation
 
 #if canImport(WebRTC)
+import AVFoundation
 import WebRTC
 
 /// Concrete `WebRTCEngine` backed by the Stasel WebRTC xcframework
@@ -56,6 +57,7 @@ final class StaselWebRTCEngine: NSObject, WebRTCEngine {
         let track = factory.audioTrack(with: audioSource, trackId: "hermes-audio")
         localAudioTrack = track
         peerConnection.add(track, streamIds: ["hermes-stream"])
+        logAudioRoute(context: "local audio track added")
     }
 
     func createDataChannel(label: String) throws {
@@ -133,6 +135,26 @@ final class StaselWebRTCEngine: NSObject, WebRTCEngine {
         }
     }
 
+    func setMicrophoneEnabled(_ enabled: Bool) {
+        localAudioTrack?.isEnabled = enabled
+        Log.info("webrtc microphone \(enabled ? "enabled" : "disabled")")
+    }
+
+    /// AVAudioSession is read-only here: libwebrtc owns configuration and
+    /// activation through RTCAudioSession. These diagnostics let a physical
+    /// device run distinguish speaker/receiver/Bluetooth routing and confirm
+    /// that voiceChat mode is active when a false barge-in is reported.
+    private func logAudioRoute(context: String) {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        Log.info(
+            "webrtc audio route (\(context)): category=\(session.category.rawValue) "
+                + "mode=\(session.mode.rawValue) inputs=\(inputs.isEmpty ? "none" : inputs) "
+                + "outputs=\(outputs.isEmpty ? "none" : outputs)"
+        )
+    }
+
     func close() {
         dataChannel?.close()
         dataChannel = nil
@@ -160,6 +182,7 @@ extension StaselWebRTCEngine: RTCPeerConnectionDelegate {
             case .connecting, .new:
                 self.onConnectionStateChange?(.connecting)
             case .connected:
+                self.logAudioRoute(context: "peer connected")
                 self.onConnectionStateChange?(.connected)
             case .disconnected:
                 self.onConnectionStateChange?(.disconnected)

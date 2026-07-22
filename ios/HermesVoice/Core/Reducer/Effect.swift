@@ -12,6 +12,7 @@ import Foundation
 /// never the mechanics of how a connection is established or rotated.
 enum Effect: Equatable {
     case sendClientEvent(RealtimeClientEvent)
+    case setMicrophoneEnabled(Bool)
     case executeTool(callId: String, name: String, argumentsJSON: String)
     case scheduleReconnect(after: TimeInterval)
     case log(String)
@@ -36,6 +37,9 @@ enum SessionEvent: Equatable {
     case callEstablished
     case callEstablishmentFailed(String)
     case transportDisconnected(reason: String?)
-    case toolResultReady(callId: String, outputJSON: String)
+    case toolResultReady(callId: String, result: HermesToolExecutionResult)
     case toolExecutionFailed(callId: String, message: String)
+    case stopSpeakingRequested
+    case pauseVoiceRequested
+    case resumeVoiceRequested
 }

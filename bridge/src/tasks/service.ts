@@ -60,6 +60,7 @@ export class TaskService {
         .createTask({
           taskId: task.id,
           hermesSessionId: request.hermesSessionId,
+          hermesThreadId: task.hermesThreadId,
           instruction: request.instruction,
           context: request.context,
         })

@@ -18,6 +18,12 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertNil(ToolRegistry.tool(named: "not_a_real_tool"))
     }
 
+    func testToolDefinitionsExplainTheTaskThreadBoundary() {
+        XCTAssertTrue(DelegateToHermesTool().definition.description.contains("new, independent"))
+        XCTAssertTrue(SendFollowupToHermesTool().definition.description.contains("same objective"))
+        XCTAssertTrue(SendFollowupToHermesTool().definition.description.contains("same Hermes conversation"))
+    }
+
     func testDelegateToHermesUsesCallIdAsIdempotencyKey() async throws {
         let backend = FakeBackendClient()
         _ = try await ToolRegistry.execute(
@@ -67,15 +73,16 @@ final class ToolRegistryTests: XCTestCase {
 
     func testGetHermesTaskStatusReturnsCompactSummaryJSON() async throws {
         let backend = FakeBackendClient()
-        let outputJSON = try await ToolRegistry.execute(
+        let result = try await ToolRegistry.execute(
             name: "get_hermes_task_status",
             callId: "call_1",
             argumentsJSON: "{\"taskId\":\"task_1\"}",
             backend: backend,
             sessionToken: "st_test"
         )
-        XCTAssertTrue(outputJSON.contains("\"taskId\":\"task_1\""))
-        XCTAssertFalse(outputJSON.contains("history"), "tool output should be the compact summary, not the full task with history")
+        XCTAssertTrue(result.outputJSON.contains("\"taskId\":\"task_1\""))
+        XCTAssertFalse(result.outputJSON.contains("history"), "tool output should be the compact summary, not the full task with history")
+        XCTAssertEqual(result.task.id, "task_1", "the local UI should receive the authoritative task alongside compact model JSON")
     }
 
     func testUnknownToolNameThrows() async {

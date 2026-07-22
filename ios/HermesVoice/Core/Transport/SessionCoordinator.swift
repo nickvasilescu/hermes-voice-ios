@@ -65,8 +65,12 @@ final class SessionCoordinator: @unchecked Sendable {
     /// `Error`, so a bare `String` is illegal.
     struct ConnectError: Error, Equatable, CustomStringConvertible {
         let message: String
+        let requiresBootstrapCredential: Bool
         var description: String { message }
-        init(_ message: String) { self.message = message }
+        init(_ message: String, requiresBootstrapCredential: Bool = false) {
+            self.message = message
+            self.requiresBootstrapCredential = requiresBootstrapCredential
+        }
     }
 
     private let backend: BackendClientProtocol
@@ -76,6 +80,7 @@ final class SessionCoordinator: @unchecked Sendable {
     private let toolDefinitions: [RealtimeToolDefinition]
     private let callLifetimeSeconds: TimeInterval
     private var lastVoice: String?
+    private var isMicrophoneEnabled = true
 
     private let mutex = AsyncMutex()
     private var generationCounter = 0
@@ -90,6 +95,7 @@ final class SessionCoordinator: @unchecked Sendable {
     var onServerEvent: ((RealtimeServerEvent) -> Void)?
     var onCallEstablished: (() -> Void)?
     var onDisconnected: ((String?) -> Void)?
+    var onBootstrapCredentialRequired: (() -> Void)?
 
     init(
         backend: BackendClientProtocol,
@@ -119,6 +125,14 @@ final class SessionCoordinator: @unchecked Sendable {
 
     func send(_ event: RealtimeClientEvent) {
         try? primaryTransport?.send(event)
+    }
+
+    /// Persists across reconnects and make-before-break rotations so a
+    /// paused app cannot accidentally reopen the microphone on a new call.
+    func setMicrophoneEnabled(_ enabled: Bool) {
+        isMicrophoneEnabled = enabled
+        primaryTransport?.setMicrophoneEnabled(enabled)
+        rotatingTransport?.setMicrophoneEnabled(enabled)
     }
 
     func scheduleReconnect(after delay: TimeInterval, voice: String?, onReconnected: @escaping (Result<Void, ConnectError>) -> Void) {
@@ -166,7 +180,10 @@ final class SessionCoordinator: @unchecked Sendable {
             onCallEstablished?()
             return .success(())
         } catch {
-            return .failure(ConnectError(String(describing: error)))
+            return .failure(ConnectError(
+                String(describing: error),
+                requiresBootstrapCredential: Self.isUnauthorized(error)
+            ))
         }
     }
 
@@ -205,7 +222,15 @@ final class SessionCoordinator: @unchecked Sendable {
                 }
                 rotatingTransport = nil
                 rotatingGeneration = nil
-                scheduleRotationRetry(voice: voiceToUse)
+                if Self.isUnauthorized(error) {
+                    onBootstrapCredentialRequired?()
+                    // Credential failures need operator input. A timer-based
+                    // retry would just replay the same rejected credential.
+                    rotationTimer?.invalidate()
+                    rotationTimer = nil
+                } else {
+                    scheduleRotationRetry(voice: voiceToUse)
+                }
             }
         }
     }
@@ -257,6 +282,7 @@ final class SessionCoordinator: @unchecked Sendable {
     ) async throws -> RealtimeTransport {
         guard credential.connectDeadline > Date() else { throw WebRTCTransportError.credentialExpired }
         let transport = makeTransport()
+        transport.setMicrophoneEnabled(isMicrophoneEnabled)
         track(transport)
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -279,7 +305,7 @@ final class SessionCoordinator: @unchecked Sendable {
                 case .sessionUpdated:
                     finish(.success(()))
                 case let .errorEvent(message):
-                    finish(.failure(WebRTCTransportError.sdpExchangeFailed(status: -1, detail: message)))
+                    finish(.failure(WebRTCTransportError.sessionConfigurationFailed(detail: message)))
                 default:
                     break
                 }
@@ -330,5 +356,12 @@ final class SessionCoordinator: @unchecked Sendable {
         case .connected, .connecting:
             break
         }
+    }
+
+    nonisolated private static func isUnauthorized(_ error: Error) -> Bool {
+        guard case BackendClientError.http(status: 401, code: _, detail: _) = error else {
+            return false
+        }
+        return true
     }
 }

@@ -78,6 +78,7 @@ test("full task lifecycle: create, get, list, followup, and completion via SSE-o
     assert.equal(createRes.status, 201);
     const task = await readJson(createRes);
     assert.match(task.id, /^task_/);
+    assert.match(task.hermesThreadId, /^ht_[0-9a-f-]{36}$/i);
     assert.equal(task.status, "queued");
     assert.equal(task.hermesSessionId, server.hermesSessionId);
 
@@ -224,6 +225,9 @@ test("clientRequestId makes POST /v1/tasks idempotent over HTTP: 201 on creation
     const firstTask = await readJson(first);
     const secondTask = await readJson(second);
     assert.equal(firstTask.id, secondTask.id);
+    assert.equal(firstTask.hermesThreadId, secondTask.hermesThreadId);
+    assert.equal(firstTask.clientRequestId, "req-1");
+    assert.equal(secondTask.clientRequestId, "req-1");
   } finally {
     await server.close();
   }

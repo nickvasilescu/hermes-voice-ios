@@ -38,6 +38,8 @@ test("POST /v1/realtime/session mints a session using the configured OpenAI key 
     assert.equal(calls[0]?.url, "https://api.openai.com/v1/realtime/client_secrets");
     const sentAuth = (calls[0]?.init.headers as Record<string, string>)?.["Authorization"];
     assert.equal(sentAuth, "Bearer sk-test-key");
+    const safetyIdentifier = (calls[0]?.init.headers as Record<string, string>)?.["OpenAI-Safety-Identifier"];
+    assert.equal(safetyIdentifier, server.hermesSessionId);
     const sentBody = JSON.parse(String(calls[0]?.init.body));
     assert.equal(sentBody.session.model, "gpt-realtime-2.1");
     assert.equal(sentBody.session.audio.output.voice, "marin");

@@ -5,45 +5,44 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bridge:
-    name: bridge (typecheck + test)
+    name: Bridge and repository checks
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bridge
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: bridge/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      - run: make check
 
-  secrets-hygiene:
-    name: no tracked .env files
+  secret-scan:
+    name: Gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: |
-          if git ls-files | grep -E '(^|/)\.env$'; then
-            echo "A .env file is tracked by git. Remove it and rotate any credentials it contained."
-            exit 1
-          fi
-          echo "OK: no tracked .env files"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # iOS is written but intentionally NOT built here: this repo's CI runners
-  # are Linux and there is no Xcode/iOS SDK available. A real pipeline would
-  # add a macos-latest job running `xcodegen generate` + `xcodebuild test`
-  # for ios/HermesVoice. See docs/ARCHITECTURE.md "Known limitations".
-  ios-build:
-    name: ios (not run — see job comment)
-    runs-on: ubuntu-latest
+  ios:
+    name: iOS build and tests
+    runs-on: macos-15
     steps:
-      - run: |
-          echo "Skipping iOS build/test: no macOS runner configured in this repo yet."
-          echo "ios/HermesVoice compiles against Xcode + an iOS SDK only; add a macos-latest"
-          echo "job here (xcodegen generate && xcodebuild test) once that's available."
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: brew install xcodegen
+      - run: make ios-test

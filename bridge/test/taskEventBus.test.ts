@@ -8,6 +8,7 @@ function fakeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: "task_1",
     hermesSessionId: "sess_1",
+    hermesThreadId: "ht_1",
     status: "queued",
     instruction: "x",
     createdAt: now,

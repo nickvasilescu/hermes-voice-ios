@@ -37,9 +37,11 @@ function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
 class FlakyProvider implements HermesProvider {
   createTaskShouldFail = false;
   sendFollowupShouldFail = false;
+  createInputs: CreateTaskInput[] = [];
   private listeners = new Set<HermesProviderListener>();
 
-  async createTask(_input: CreateTaskInput): Promise<void> {
+  async createTask(input: CreateTaskInput): Promise<void> {
+    this.createInputs.push(input);
     if (this.createTaskShouldFail) throw new Error("upstream Hermes is unreachable");
   }
 
@@ -56,6 +58,27 @@ class FlakyProvider implements HermesProvider {
     return () => this.listeners.delete(listener);
   }
 }
+
+test("TaskService sends each independent task's thread to Hermes, not the shared client session", async () => {
+  const store = new TaskStore();
+  const eventBus = new TaskEventBus();
+  const provider = new FlakyProvider();
+  const service = new TaskService(store, provider, eventBus);
+
+  const first = service.createTask({ hermesSessionId: "sess_shared", instruction: "book dinner" }).task;
+  const second = service.createTask({ hermesSessionId: "sess_shared", instruction: "review a PR" }).task;
+  await waitUntil(() => provider.createInputs.length === 2);
+
+  assert.notEqual(first.hermesThreadId, second.hermesThreadId);
+  assert.deepEqual(
+    provider.createInputs.map(({ taskId, hermesThreadId }) => ({ taskId, hermesThreadId })),
+    [
+      { taskId: first.id, hermesThreadId: first.hermesThreadId },
+      { taskId: second.id, hermesThreadId: second.hermesThreadId },
+    ]
+  );
+  assert.ok(provider.createInputs.every((input) => input.hermesThreadId !== "sess_shared"));
+});
 
 test("TaskService.createTask publishes task.created and runs a task to completion via SSE", async () => {
   const { service, eventBus } = makeService();
@@ -80,6 +103,8 @@ test("TaskService.createTask is idempotent on clientRequestId: created is false 
   assert.equal(a.task.id, b.task.id);
   assert.equal(a.created, true);
   assert.equal(b.created, false);
+  assert.equal(a.task.clientRequestId, "req-1");
+  assert.equal(b.task.clientRequestId, "req-1");
 
   await waitUntil(() => events.filter((e) => e.type === "task.created").length >= 1);
   await new Promise((r) => setTimeout(r, 30));
